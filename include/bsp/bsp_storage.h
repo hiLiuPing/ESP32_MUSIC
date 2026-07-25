@@ -1,0 +1,7 @@
+#pragma once
+
+#include <FS.h>
+
+bool bsp_storage_init();
+bool bsp_storage_available();
+fs::FS &bsp_storage_fs();
