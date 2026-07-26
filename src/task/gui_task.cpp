@@ -29,6 +29,6 @@ void gui_task(void *parameter) {
         gui_page_render();
         egui_port_poll();
 
-        xSemaphoreTake(GuiWakeSemaphore, pdMS_TO_TICKS(100));
+        xSemaphoreTake(GuiWakeSemaphore, pdMS_TO_TICKS(50));
     }
 }

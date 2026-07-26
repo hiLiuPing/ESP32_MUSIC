@@ -8,14 +8,10 @@
 void user_AppDataTask(void *parameter) {
     (void)parameter;
     TickType_t last_wake = xTaskGetTickCount();
-    AppDataSnapshot snapshot = {};
 
     for (;;) {
-        ++snapshot.version;
-        snapshot.uptime_ms = millis();
-        snapshot.hardware_bits = static_cast<uint32_t>(
-            xEventGroupGetBits(HardwareEventGroup));
-        app_data_set_snapshot(snapshot);
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(100));
+        app_data_update_temporary_home_data(
+            millis(), static_cast<uint32_t>(xEventGroupGetBits(HardwareEventGroup)));
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(1000));
     }
 }

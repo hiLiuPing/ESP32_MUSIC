@@ -11,6 +11,12 @@
 #define ST73XX_COLOR_BLACK ST7305_COLOR_BLACK
 #define ST73XX_COLOR_WHITE ST7305_COLOR_WHITE
 
+enum class ST7305QuantizeMode : uint8_t {
+    Bayer4x4 = 0,
+    Threshold,
+    MonoAsset,
+};
+
 class ST7305_2p9_BW_DisplayDriver : public ST73XX_UI{
 public:
     ST7305_2p9_BW_DisplayDriver(int dcPin, int resPin, int csPin, int sclkPin, int sdinPin, SPIClass& spi);
@@ -23,6 +29,8 @@ public:
 
     void blitRgb565(int16_t x, int16_t y, int16_t width, int16_t height,
                     const uint16_t *pixels);
+    void setQuantizeMode(ST7305QuantizeMode mode);
+    ST7305QuantizeMode getQuantizeMode() const;
 
     void writePoint(uint x, uint y, bool enabled) override;
     void writePoint(uint x, uint y, uint16_t data) override;
@@ -50,6 +58,7 @@ private:
 
     bool HPM_MODE = false;
     bool LPM_MODE = false;
+    ST7305QuantizeMode quantize_mode = ST7305QuantizeMode::Bayer4x4;
 
     uint8_t* display_buffer;
     SPIClass& spiRef;

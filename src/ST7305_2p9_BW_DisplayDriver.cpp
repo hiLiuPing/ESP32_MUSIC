@@ -3,6 +3,7 @@
 #include <stdlib.h>
 
 #define ABS_DIFF(x, y) (((x) > (y))? ((x) - (y)) : ((y) - (x)))
+#define ST7305_MONO_THRESHOLD 128U
 
 ST7305_2p9_BW_DisplayDriver::ST7305_2p9_BW_DisplayDriver(int dcPin, int resPin, int csPin, int sclkPin, int sdinPin, SPIClass& spi) : 
     DC_PIN(dcPin), RES_PIN(resPin), CS_PIN(csPin), SCLK_PIN(sclkPin), SDIN_PIN(sdinPin),
@@ -98,14 +99,25 @@ void ST7305_2p9_BW_DisplayDriver::blitRgb565(int16_t x, int16_t y,
                 (static_cast<uint16_t>(red) * 54U +
                  static_cast<uint16_t>(green) * 183U +
                  static_cast<uint16_t>(blue) * 19U) >> 8U);
-            const uint8_t threshold = static_cast<uint8_t>(
-                bayer4x4[((logical_y & 3) << 2) | (logical_x & 3)] * 16U + 8U);
+            uint8_t threshold = ST7305_MONO_THRESHOLD;
+            if (quantize_mode == ST7305QuantizeMode::Bayer4x4) {
+                threshold = static_cast<uint8_t>(
+                    bayer4x4[((logical_y & 3) << 2) | (logical_x & 3)] * 16U + 8U);
+            }
 
             const uint16_t physical_x = static_cast<uint16_t>(167 - logical_y);
             const uint16_t physical_y = static_cast<uint16_t>(logical_x);
             writePackedPoint(physical_x, physical_y, luminance < threshold);
         }
     }
+}
+
+void ST7305_2p9_BW_DisplayDriver::setQuantizeMode(ST7305QuantizeMode mode) {
+    quantize_mode = mode;
+}
+
+ST7305QuantizeMode ST7305_2p9_BW_DisplayDriver::getQuantizeMode() const {
+    return quantize_mode;
 }
 
 void ST7305_2p9_BW_DisplayDriver::writePoint(uint x, uint y, bool enabled) {
