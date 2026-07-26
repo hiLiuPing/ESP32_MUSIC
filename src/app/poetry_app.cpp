@@ -15,6 +15,12 @@ PoetryEntry cached = {};
 uint32_t last_index[4] = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
 bool initialized = false;
 
+struct LittleFsGuard {
+    bool locked;
+    explicit LittleFsGuard(TickType_t timeout) : locked(bsp_littlefs_lock(timeout)) {}
+    ~LittleFsGuard() { if (locked) bsp_littlefs_unlock(); }
+};
+
 const char *path_for(PoetryCollection c) {
     switch (c) {
         case PoetryCollection::Song300: return "/song_300.idx";
@@ -109,18 +115,14 @@ void poetry_app_init() {
     if (initialized) return;
     initialized = true;
     cached = {};
-    for (uint8_t i = 0U; i < 4U; ++i) {
-        if (bsp_littlefs_available()) {
-            File file = bsp_littlefs_fs().open(path_for(static_cast<PoetryCollection>(i)), "r");
-            if (file) file.close();
-        }
-    }
 }
 
 bool poetry_app_get_random(PoetryCollection collection, PoetryEntry *out) {
     poetry_app_init();
     const char *path = path_for(collection);
     if (out == nullptr || path == nullptr || !bsp_littlefs_available()) return false;
+    LittleFsGuard guard(pdMS_TO_TICKS(100U));
+    if (!guard.locked) return false;
     File file = bsp_littlefs_fs().open(path, "r");
     if (!file) return false;
     uint8_t magic[4] = {};

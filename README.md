@@ -6,19 +6,24 @@ WM8978 codec. The firmware is split into four layers:
 - `src/bsp`: pins and hardware drivers for display, SD, codec and input.
 - `src/app`: command parser, MP3 library and shared player state.
 - `src/task`: FreeRTOS object creation and hardware/input/player/GUI tasks.
-- `src/gui`: boot, home, music, read, weather, poetry and setting pages.
+- `src/gui`: boot, home, music, weather, poetry and setting pages.
 
-The player does not connect to Wi-Fi and does not start playback at boot. It
-recursively indexes up to 128 MP3 files from the SD card and waits on the first
-track. Weather data is currently populated with local seven-day demonstration
-values; poetry and Heiti font resources are read from LittleFS at runtime.
+The player does not start playback at boot. It recursively indexes up to 128 MP3
+files from the SD card and waits on the first track. Weather/time synchronization
+is disabled by default; when enabled in Setting, the firmware uses the saved
+Wi-Fi profile to query NTP and QWeather on the configured interval.
+
+When no Wi-Fi profile exists, or when `WIFI CONFIG` is started from Setting, the
+device creates the `DuduClock` access point at `192.168.1.1`. Submit the Wi-Fi,
+city and optional administrative region in the configuration page, then the
+device closes the AP and performs an immediate synchronization.
 
 ## Serial control
 
 Use `115200 8N1` and terminate every command with CR or LF.
 
 ```text
-page home|music|read|weather|poetry|setting
+page home|music|weather|poetry|setting
 page-prev
 page-next
 up

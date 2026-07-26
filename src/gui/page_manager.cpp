@@ -67,6 +67,9 @@ bool switch_page(GuiPageDescriptor *target, bool record_history) {
     if ((target == nullptr) || (target == current_page)) {
         return false;
     }
+    Serial.printf("[GUI] page %s -> %s\n",
+                  current_page == nullptr ? "none" : current_page->name,
+                  target->name);
     ui_poetry_popup_dismiss();
     ui_system_popup_dismiss_immediate();
 

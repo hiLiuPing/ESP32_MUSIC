@@ -8,6 +8,7 @@
 #include "app/key_types.h"
 #include "app/player_types.h"
 #include "app/system_notify.h"
+#include "task/weather_sync_task.h"
 
 constexpr EventBits_t HW_EVENT_DISPLAY_READY = BIT0;
 constexpr EventBits_t HW_EVENT_SD_READY = BIT1;

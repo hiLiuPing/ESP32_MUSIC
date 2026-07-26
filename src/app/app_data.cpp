@@ -16,6 +16,7 @@ HomeEnvironmentData injected_environment = {};
 HomeBatteryData injected_battery = {};
 uint32_t version = 0;
 bool external_time_source = false;
+bool time_stale_override = false;
 
 bool lock_snapshot(TickType_t timeout) {
     return snapshot_mutex != nullptr &&
@@ -175,9 +176,7 @@ void app_data_attach_mutex(SemaphoreHandle_t mutex) {
     if (lock_snapshot(portMAX_DELAY)) {
         injected_weather.icon_id = 499;
         injected_weather.scene = WEATHER_SCENE_UNKNOWN;
-        if (injected_forecast_version == 0U) {
-            injected_forecast_version = 1U;
-        }
+        if (injected_forecast_version == 0U) injected_forecast_version = 1U;
         rebuild_locked();
         unlock_snapshot();
     }
@@ -187,6 +186,7 @@ void app_data_set_snapshot(const AppDataSnapshot &snapshot) {
     if (lock_snapshot(portMAX_DELAY)) {
         current_snapshot = snapshot;
         injected_time = snapshot.time;
+        time_stale_override = snapshot.time.stale;
         injected_weather = snapshot.weather;
         std::memcpy(injected_forecast, snapshot.forecast, sizeof(injected_forecast));
         injected_forecast_version = snapshot.forecast_version;
@@ -211,7 +211,26 @@ bool app_data_get_snapshot(AppDataSnapshot *snapshot) {
 void app_data_set_time(const AppTime &time) {
     if (lock_snapshot(portMAX_DELAY)) {
         injected_time = time;
+        time_stale_override = time.stale;
         external_time_source = true;
+        rebuild_locked();
+        unlock_snapshot();
+    }
+}
+
+void app_data_mark_time_fresh() {
+    if (lock_snapshot(portMAX_DELAY)) {
+        time_stale_override = false;
+        if (injected_time.valid) injected_time.stale = false;
+        rebuild_locked();
+        unlock_snapshot();
+    }
+}
+
+void app_data_mark_time_stale() {
+    if (lock_snapshot(portMAX_DELAY)) {
+        time_stale_override = true;
+        if (injected_time.valid) injected_time.stale = true;
         rebuild_locked();
         unlock_snapshot();
     }
@@ -220,6 +239,17 @@ void app_data_set_time(const AppTime &time) {
 void app_data_set_weather(const HomeWeatherData &weather) {
     if (lock_snapshot(portMAX_DELAY)) {
         injected_weather = weather;
+        rebuild_locked();
+        unlock_snapshot();
+    }
+}
+
+void app_data_mark_weather_stale() {
+    if (lock_snapshot(portMAX_DELAY)) {
+        if (injected_weather.valid) injected_weather.stale = true;
+        for (WeatherForecastDay &day : injected_forecast) {
+            if (day.valid) day.stale = true;
+        }
         rebuild_locked();
         unlock_snapshot();
     }
@@ -342,9 +372,9 @@ void app_data_update_temporary_home_data(uint32_t uptime_ms,
     for (uint8_t i = 0U; i < APP_WEATHER_FORECAST_DAYS; ++i) {
         WeatherForecastDay &day = injected_forecast[i];
         day.version = injected_forecast_version + 1U;
-        day.year = temporary_time.year;
-        day.month = temporary_time.month;
-        day.day = static_cast<uint8_t>(temporary_time.day + i);
+        // Advance civil dates rather than adding to the day-of-month, so the
+        // demo forecast remains valid across month and year boundaries.
+        civil_from_days(20660 + elapsed_days + i, &day.year, &day.month, &day.day);
         day.high_c = highs[i];
         day.low_c = lows[i];
         day.icon_id = icons[i];
@@ -367,6 +397,7 @@ void DataApp_HomeStatus_Update() {
     if (lock_snapshot(portMAX_DELAY)) {
         if (!external_time_source && system_time_valid) {
             system_time.version = injected_time.version + 1U;
+            system_time.stale = time_stale_override;
             injected_time = system_time;
         } else if (!external_time_source && !system_time_valid) {
             injected_time = {};

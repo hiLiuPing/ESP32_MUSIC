@@ -120,7 +120,10 @@ void app_data_set_snapshot(const AppDataSnapshot &snapshot);
 bool app_data_get_snapshot(AppDataSnapshot *snapshot);
 
 void app_data_set_time(const AppTime &time);
+void app_data_mark_time_fresh();
+void app_data_mark_time_stale();
 void app_data_set_weather(const HomeWeatherData &weather);
+void app_data_mark_weather_stale();
 void app_data_set_weather_forecast(const WeatherForecastDay *days, uint8_t count,
                                    uint32_t version = 0U, bool stale = false);
 bool app_data_get_weather_forecast(WeatherForecastDay *days, uint8_t count,

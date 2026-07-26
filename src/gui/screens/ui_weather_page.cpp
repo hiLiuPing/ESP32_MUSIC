@@ -8,7 +8,6 @@
 #include "gui/egui_port.h"
 #include "gui/gui_common.h"
 #include "gui/resources/icons.h"
-#include "gui/ui_heiti_font.h"
 
 namespace {
 GuiEguiView view;
@@ -32,8 +31,7 @@ const char *weekday_name(const WeatherForecastDay &day) {
 void draw(egui_canvas_t *canvas) {
     gui_draw_page_background(canvas);
     gui_draw_header(canvas, "WEATHER 7D");
-    const egui_font_t *font = ui_heiti_font_get(12U);
-    egui_canvas_draw_text(canvas, font, "7 DAY FORECAST", 12, 27,
+    egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4), "7 DAY FORECAST", 12, 27,
                           EGUI_COLOR_BLACK, EGUI_ALPHA_100);
     for (uint8_t i = 0U; i < APP_WEATHER_FORECAST_DAYS; ++i) {
         const int16_t x = static_cast<int16_t>(4 + i * 54);

@@ -10,8 +10,10 @@ void user_AppDataTask(void *parameter) {
     TickType_t last_wake = xTaskGetTickCount();
 
     for (;;) {
-        app_data_update_temporary_home_data(
+        DataApp_HomeStatus_Update();
+        app_data_update_runtime(
             millis(), static_cast<uint32_t>(xEventGroupGetBits(HardwareEventGroup)));
+        if (GuiWakeSemaphore != nullptr) xSemaphoreGive(GuiWakeSemaphore);
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(1000));
     }
 }

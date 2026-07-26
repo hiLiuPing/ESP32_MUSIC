@@ -8,6 +8,7 @@
 #include "task/user_AppDataTask.h"
 #include "task/user_KeyManllegeTask.h"
 #include "task/user_KeyTask.h"
+#include "task/weather_sync_task.h"
 
 QueueHandle_t KeyEventQueue = nullptr;
 QueueHandle_t GuiKeyQueue = nullptr;
@@ -77,6 +78,9 @@ void task_system_init() {
                  "AppData");
     require_task(xTaskCreatePinnedToCore(gui_task, "Gui", 6144, nullptr, 2, nullptr, 0),
                  "Gui");
+    require_task(xTaskCreate(weather_sync_task, "WeatherSync", 12288, nullptr, 1,
+                             &WeatherSyncTaskHandle),
+                 "WeatherSync");
 }
 
 bool task_post_player_command(PlayerCommandType type, int16_t value) {

@@ -6,7 +6,6 @@
 #include "gui/screens/ui_boot_page.h"
 #include "gui/screens/ui_home_page.h"
 #include "gui/screens/ui_music_page.h"
-#include "gui/screens/ui_read_page.h"
 #include "gui/screens/ui_setting_page.h"
 #include "gui/screens/ui_weather_page.h"
 #include "gui/screens/ui_poetry_page.h"
@@ -20,10 +19,9 @@ void gui_init() {
         &ui_boot_page_descriptor(),
         &ui_home_page_descriptor(),
         &ui_music_page_descriptor(),
-        &ui_read_page_descriptor(),
-        &ui_setting_page_descriptor(),
         &ui_weather_page_descriptor(),
         &ui_poetry_page_descriptor(),
+        &ui_setting_page_descriptor(),
     };
     for (GuiPageDescriptor *page : pages) {
         if (!gui_page_manager_register(page)) {

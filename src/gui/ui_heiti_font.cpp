@@ -121,8 +121,13 @@ int font_draw(const egui_font_t *font, egui_canvas_t *canvas, const void *string
         if (ctx->ready && index >= 0) {
             const uint32_t glyph_size = glyph_bytes(ctx->size);
             uint8_t bitmap[64] = {};
-            if (glyph_size <= sizeof(bitmap) && ctx->file.seek(static_cast<uint32_t>(index) * glyph_size) &&
-                ctx->file.read(bitmap, glyph_size) == glyph_size) {
+            bool glyph_loaded = false;
+            if (glyph_size <= sizeof(bitmap) && bsp_littlefs_lock(pdMS_TO_TICKS(20U))) {
+                glyph_loaded = ctx->file.seek(static_cast<uint32_t>(index) * glyph_size) &&
+                               ctx->file.read(bitmap, glyph_size) == glyph_size;
+                bsp_littlefs_unlock();
+            }
+            if (glyph_loaded) {
                 for (uint8_t gy = 0U; gy < ctx->size; ++gy) {
                     for (uint8_t gx = 0U; gx < ctx->size; ++gx) {
                         const uint32_t bit = static_cast<uint32_t>(gy) * ctx->size + gx;
@@ -180,12 +185,14 @@ void init_contexts() {
     for (uint8_t i = 0U; i < 6U; ++i) {
         FontContext &ctx = contexts[i];
         if (ctx.ready) continue;
-        if (ctx.file) ctx.file.close();
         char path[32] = {};
         std::snprintf(path, sizeof(path), "/heiti_1_%u.bin", static_cast<unsigned>(ctx.size));
+        if (!bsp_littlefs_lock(pdMS_TO_TICKS(100U))) continue;
+        if (ctx.file) ctx.file.close();
         ctx.file = bsp_littlefs_fs().open(path, "r");
         const uint64_t expected = static_cast<uint64_t>(glyph_count()) * glyph_bytes(ctx.size);
         ctx.ready = ctx.file && static_cast<uint64_t>(ctx.file.size()) == expected;
+        bsp_littlefs_unlock();
     }
 }
 }

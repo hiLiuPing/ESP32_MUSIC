@@ -10,6 +10,15 @@
 void hardware_init_task(void *parameter) {
     (void)parameter;
 
+    // Mount LittleFS before publishing display readiness so GUI resources are
+    // available before the GUI task can start rendering pages.
+    Serial.println("[HW] LittleFS init");
+    if (bsp_littlefs_init()) {
+        Serial.println("[HW] LittleFS ready");
+    } else {
+        Serial.println("[HW] LittleFS unavailable");
+    }
+
     Serial.println("[HW] display init");
     if (bsp_display_init()) {
         xEventGroupSetBits(HardwareEventGroup, HW_EVENT_DISPLAY_READY);
@@ -22,13 +31,6 @@ void hardware_init_task(void *parameter) {
     } else {
         Serial.println("[HW] SD unavailable");
         system_notify_post(SystemNotifyType::Storage, "SD CARD UNAVAILABLE");
-    }
-
-    Serial.println("[HW] LittleFS init");
-    if (bsp_littlefs_init()) {
-        Serial.println("[HW] LittleFS ready");
-    } else {
-        Serial.println("[HW] LittleFS unavailable");
     }
 
     Serial.println("[HW] WM8978 init");
