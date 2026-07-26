@@ -9,8 +9,8 @@
 #include "bsp/bsp_display.h"
 #include "gui/egui_port.h"
 #include "gui/resources/home_camp_res.h"
-#include "gui/resources/home_cloud_outline_res.h"
 #include "gui/resources/home_scene_res.h"
+#include "gui/resources/home_sky_objects_res.h"
 #include "gui/resources/icons.h"
 #include "gui/page.h"
 
@@ -53,12 +53,30 @@ typedef struct
 
 typedef struct
 {
-    int cloud_base;
     int bike_x;
     uint8_t bike_index;
     uint8_t fire_index;
     uint8_t is_valid;
 } ui_home_scene_state_t;
+
+typedef struct
+{
+    int16_t x;
+    int16_t y;
+    uint8_t asset_index;
+} ui_home_sky_entity_t;
+
+#define HOME_SKY_CLOUD_COUNT 3U
+#define HOME_SKY_BIRD_COUNT 5U
+
+typedef struct
+{
+    ui_home_sky_entity_t clouds[HOME_SKY_CLOUD_COUNT];
+    ui_home_sky_entity_t birds[HOME_SKY_BIRD_COUNT];
+    uint32_t cloud_move_tick;
+    uint32_t bird_move_tick;
+    uint8_t is_valid;
+} ui_home_sky_state_t;
 
 typedef struct
 {
@@ -142,6 +160,7 @@ static uint32_t s_home_scene_tick = 0U;
 static uint32_t s_home_status_tick = 0U;
 static uint32_t s_home_status_version = 0xFFFFFFFFU;
 static ui_home_scene_state_t s_home_scene_state;
+static ui_home_sky_state_t s_home_sky_state;
 static ui_home_weather_state_t s_home_weather_state;
 static ui_home_battery_state_t s_home_battery_state;
 static ui_home_particle_t s_home_particles[30];
@@ -159,6 +178,8 @@ static void ui_HomePage_draw_status(egui_canvas_t *canvas,
                                     uint32_t top_text_rgb,
                                     uint32_t ground_text_rgb);
 static void ui_HomePage_timer_cb(egui_timer_t *timer);
+static void ui_HomePage_sky_reset(uint32_t now);
+static void ui_HomePage_sky_update(egui_view_t *view, uint32_t now);
 static void ui_HomePage_weather_reset(WeatherScene_t scene, uint8_t is_day, uint32_t now);
 static ui_home_style_t ui_HomePage_get_style(WeatherScene_t scene, uint8_t is_day);
 static uint8_t ui_HomePage_rgb_luma(uint32_t rgb);
@@ -253,8 +274,10 @@ static constexpr bool HOME_SHOW_BATTERY = false;
 #define HOME_HUMIDITY_WET_WARNING  80U
 #define HOME_HUMIDITY_WET_DANGER   90U
 
-#define HOME_SCENE_WRAP_W UI_SCREEN_W
-#define HOME_SCENE_CLOUD_STEP_MS 50U
+#define HOME_SKY_CLOUD_STEP_MS 200U
+#define HOME_SKY_BIRD_STEP_MS 100U
+#define HOME_SKY_RESPAWN_GAP_MIN 24U
+#define HOME_SKY_RESPAWN_GAP_MAX 72U
 #define HOME_SCENE_BIKE_STEP_MS 100U
 #define HOME_SCENE_FIRE_STEP_MS 100U
 #define HOME_BIKE_CYCLE_MS 3600000U
@@ -268,15 +291,6 @@ static constexpr bool HOME_SHOW_BATTERY = false;
 #define HOME_SNOW_COUNT 10U
 #define HOME_STAR_CLEAR_COUNT 8U
 #define HOME_STAR_CLOUDY_COUNT 4U
-
-#define HOME_CLOUD1_X 20
-#define HOME_CLOUD1_Y 8
-#define HOME_CLOUD1_W 229
-#define HOME_CLOUD1_H 112
-#define HOME_CLOUD2_X 300
-#define HOME_CLOUD2_Y 50
-#define HOME_CLOUD2_W 156
-#define HOME_CLOUD2_H 76
 
 #define HOME_BIKE_START_X (int)((((uint32_t)UI_SCREEN_W * 20U) + 50U) / 100U)
 #define HOME_BIKE_END_X (int)((((uint32_t)UI_SCREEN_W * 80U) + 50U) / 100U)
@@ -300,6 +314,13 @@ static constexpr bool HOME_SHOW_BATTERY = false;
 #define HOME_GROUND_BASE_Y 143
 #define HOME_GROUND_BASE_W 232
 #define HOME_GROUND_BASE_H 25
+#define HOME_SKY_BIRD_TOP_Y 32
+#define HOME_SKY_BIRD_BOTTOM_Y 56
+#define HOME_SKY_CLOUD_TOP_Y 64
+#define HOME_SKY_CLOUD_BOTTOM_Y (HOME_GROUND_TILE_Y - 8)
+
+static_assert((HOME_SKY_BIRD_BOTTOM_Y + 8) <= HOME_SKY_CLOUD_TOP_Y,
+              "bird and cloud lanes must not overlap");
 
 /* Skip image setup when the current PFB work region does not touch the image. */
 static inline void draw_if_visible(const egui_image_std_t *img, egui_canvas_t *canvas,
@@ -459,6 +480,199 @@ static uint32_t ui_HomePage_random_range(uint32_t min_value, uint32_t max_value)
     }
 
     return min_value + (ui_HomePage_random_next() % (max_value - min_value + 1U));
+}
+
+static int16_t ui_HomePage_sky_random_y(const home_sky_asset_t *asset,
+                                        int top_y,
+                                        int bottom_y)
+{
+    int max_y;
+
+    if (asset == NULL)
+    {
+        return (int16_t)top_y;
+    }
+    max_y = bottom_y - (int)asset->height;
+    if (max_y <= top_y)
+    {
+        return (int16_t)top_y;
+    }
+    return (int16_t)ui_HomePage_random_range((uint32_t)top_y, (uint32_t)max_y);
+}
+
+static uint8_t ui_HomePage_sky_next_asset(uint8_t count, uint8_t previous)
+{
+    uint8_t next;
+
+    if (count <= 1U)
+    {
+        return 0U;
+    }
+    next = (uint8_t)ui_HomePage_random_range(0U, count - 2U);
+    return (next >= previous) ? (uint8_t)(next + 1U) : next;
+}
+
+static void ui_HomePage_sky_reset_group(ui_home_sky_entity_t *entities,
+                                        uint8_t entity_count,
+                                        uint8_t asset_count,
+                                        const home_sky_asset_t *(*get_asset)(uint8_t),
+                                        int top_y,
+                                        int bottom_y)
+{
+    int slot_width = (int)UI_SCREEN_W / entity_count;
+
+    for (uint8_t i = 0U; i < entity_count; i++)
+    {
+        ui_home_sky_entity_t *entity = &entities[i];
+        int slot_left = (int)i * slot_width;
+        int slot_right = (i == (entity_count - 1U)) ? (int)UI_SCREEN_W : slot_left + slot_width;
+        int max_x;
+        const home_sky_asset_t *asset;
+
+        entity->asset_index = (uint8_t)ui_HomePage_random_range(0U, asset_count - 1U);
+        asset = get_asset(entity->asset_index);
+        max_x = slot_right - (int)asset->width;
+        entity->x = (int16_t)ui_HomePage_random_range((uint32_t)slot_left,
+                                                     (uint32_t)((max_x > slot_left) ? max_x : slot_left));
+        entity->y = ui_HomePage_sky_random_y(asset, top_y, bottom_y);
+    }
+}
+
+static void ui_HomePage_sky_reset(uint32_t now)
+{
+    uint8_t cloud_asset_count = home_sky_cloud_count();
+    uint8_t bird_asset_count = home_sky_bird_count();
+
+    if ((cloud_asset_count == 0U) || (bird_asset_count == 0U))
+    {
+        memset(&s_home_sky_state, 0, sizeof(s_home_sky_state));
+        return;
+    }
+
+    ui_HomePage_sky_reset_group(s_home_sky_state.clouds,
+                                HOME_SKY_CLOUD_COUNT,
+                                cloud_asset_count,
+                                home_sky_cloud_get,
+                                HOME_SKY_CLOUD_TOP_Y,
+                                HOME_SKY_CLOUD_BOTTOM_Y);
+    ui_HomePage_sky_reset_group(s_home_sky_state.birds,
+                                HOME_SKY_BIRD_COUNT,
+                                bird_asset_count,
+                                home_sky_bird_get,
+                                HOME_SKY_BIRD_TOP_Y,
+                                HOME_SKY_BIRD_BOTTOM_Y);
+    s_home_sky_state.cloud_move_tick = now;
+    s_home_sky_state.bird_move_tick = now;
+    s_home_sky_state.is_valid = 1U;
+}
+
+static void ui_HomePage_sky_invalidate_entity(egui_view_t *view,
+                                               const ui_home_sky_entity_t *entity,
+                                               const home_sky_asset_t *asset)
+{
+    if ((entity != NULL) && (asset != NULL))
+    {
+        ui_HomePage_invalidate_clipped_rect(view,
+                                            entity->x,
+                                            entity->y,
+                                            (int)asset->width,
+                                            (int)asset->height);
+    }
+}
+
+static void ui_HomePage_sky_move_group(egui_view_t *view,
+                                        ui_home_sky_entity_t *entities,
+                                        uint8_t entity_count,
+                                        uint32_t steps,
+                                        uint8_t asset_count,
+                                        const home_sky_asset_t *(*get_asset)(uint8_t),
+                                        int top_y,
+                                        int bottom_y)
+{
+    for (uint8_t i = 0U; i < entity_count; i++)
+    {
+        ui_home_sky_entity_t previous = entities[i];
+        ui_home_sky_entity_t *entity = &entities[i];
+        const home_sky_asset_t *old_asset = get_asset(previous.asset_index);
+
+        entity->x = (int16_t)(entity->x - (int32_t)steps);
+        if ((old_asset != NULL) && ((int)entity->x + (int)old_asset->width < 0))
+        {
+            int rightmost = (int)UI_SCREEN_W;
+            const home_sky_asset_t *new_asset;
+
+            entity->asset_index = ui_HomePage_sky_next_asset(asset_count, previous.asset_index);
+            new_asset = get_asset(entity->asset_index);
+            for (uint8_t peer_index = 0U; peer_index < entity_count; peer_index++)
+            {
+                const ui_home_sky_entity_t *peer;
+                const home_sky_asset_t *peer_asset;
+                int peer_right;
+
+                if (peer_index == i)
+                {
+                    continue;
+                }
+                peer = &entities[peer_index];
+                peer_asset = get_asset(peer->asset_index);
+                if (peer_asset == NULL)
+                {
+                    continue;
+                }
+                peer_right = (int)peer->x + (int)peer_asset->width;
+                if (peer_right > rightmost)
+                {
+                    rightmost = peer_right;
+                }
+            }
+            entity->x = (int16_t)(rightmost +
+                         (int)ui_HomePage_random_range(HOME_SKY_RESPAWN_GAP_MIN,
+                                                       HOME_SKY_RESPAWN_GAP_MAX));
+            entity->y = ui_HomePage_sky_random_y(new_asset, top_y, bottom_y);
+        }
+
+        ui_HomePage_sky_invalidate_entity(view, &previous, old_asset);
+        ui_HomePage_sky_invalidate_entity(view, entity, get_asset(entity->asset_index));
+    }
+}
+
+static void ui_HomePage_sky_update(egui_view_t *view, uint32_t now)
+{
+    uint32_t cloud_steps;
+    uint32_t bird_steps;
+
+    if ((view == NULL) || (s_home_sky_state.is_valid == 0U))
+    {
+        return;
+    }
+
+    cloud_steps = (now - s_home_sky_state.cloud_move_tick) / HOME_SKY_CLOUD_STEP_MS;
+    if (cloud_steps != 0U)
+    {
+        s_home_sky_state.cloud_move_tick += cloud_steps * HOME_SKY_CLOUD_STEP_MS;
+        ui_HomePage_sky_move_group(view,
+                                   s_home_sky_state.clouds,
+                                   HOME_SKY_CLOUD_COUNT,
+                                   cloud_steps,
+                                   home_sky_cloud_count(),
+                                   home_sky_cloud_get,
+                                   HOME_SKY_CLOUD_TOP_Y,
+                                   HOME_SKY_CLOUD_BOTTOM_Y);
+    }
+
+    bird_steps = (now - s_home_sky_state.bird_move_tick) / HOME_SKY_BIRD_STEP_MS;
+    if (bird_steps != 0U)
+    {
+        s_home_sky_state.bird_move_tick += bird_steps * HOME_SKY_BIRD_STEP_MS;
+        ui_HomePage_sky_move_group(view,
+                                   s_home_sky_state.birds,
+                                   HOME_SKY_BIRD_COUNT,
+                                   bird_steps,
+                                   home_sky_bird_count(),
+                                   home_sky_bird_get,
+                                   HOME_SKY_BIRD_TOP_Y,
+                                   HOME_SKY_BIRD_BOTTOM_Y);
+    }
 }
 
 static uint8_t ui_HomePage_weather_particle_count(WeatherScene_t scene, uint8_t is_day)
@@ -793,11 +1007,6 @@ static void ui_HomePage_weather_update_lightning(egui_view_t *view, uint32_t now
     }
 }
 
-static int ui_HomePage_scene_cloud_base(uint32_t tick)
-{
-    return -(int)((tick / HOME_SCENE_CLOUD_STEP_MS) % HOME_SCENE_WRAP_W);
-}
-
 static uint8_t ui_HomePage_scene_bike_index(uint32_t tick)
 {
     return (uint8_t)((tick / HOME_SCENE_BIKE_STEP_MS) % 4U);
@@ -828,21 +1037,10 @@ static void ui_HomePage_get_scene_state(uint32_t tick, ui_home_scene_state_t *st
         return;
     }
 
-    state->cloud_base = ui_HomePage_scene_cloud_base(tick);
     state->bike_x = ui_HomePage_scene_bike_x(tick);
     state->bike_index = ui_HomePage_scene_bike_index(tick);
     state->fire_index = ui_HomePage_scene_fire_index(tick);
     state->is_valid = 1U;
-}
-
-static void ui_HomePage_invalidate_cloud_move(egui_view_t *view,
-                                               int old_base_x,
-                                               int new_base_x)
-{
-    ui_HomePage_invalidate_clipped_rect(view, old_base_x + HOME_CLOUD1_X, HOME_CLOUD1_Y, HOME_CLOUD1_W, HOME_CLOUD1_H);
-    ui_HomePage_invalidate_clipped_rect(view, new_base_x + HOME_CLOUD1_X, HOME_CLOUD1_Y, HOME_CLOUD1_W, HOME_CLOUD1_H);
-    ui_HomePage_invalidate_clipped_rect(view, old_base_x + HOME_CLOUD2_X, HOME_CLOUD2_Y, HOME_CLOUD2_W, HOME_CLOUD2_H);
-    ui_HomePage_invalidate_clipped_rect(view, new_base_x + HOME_CLOUD2_X, HOME_CLOUD2_Y, HOME_CLOUD2_W, HOME_CLOUD2_H);
 }
 
 static void ui_HomePage_union_clipped_bounds(int x,
@@ -907,14 +1105,6 @@ static void ui_HomePage_invalidate_precise_scene(egui_view_t *view, const ui_hom
     if ((view == NULL) || (prev == NULL) || (next == NULL))
     {
         return;
-    }
-
-    if (prev->cloud_base != next->cloud_base)
-    {
-        ui_HomePage_invalidate_cloud_move(view, prev->cloud_base, next->cloud_base);
-        ui_HomePage_invalidate_cloud_move(view,
-                                          prev->cloud_base + HOME_SCENE_WRAP_W,
-                                          next->cloud_base + HOME_SCENE_WRAP_W);
     }
 
     if (s_home_render_status.is_day != 0U)
@@ -1096,6 +1286,7 @@ void ui_HomePage_screen_init(void)
     ui_HomePage_update_render_snapshot(&status);
     (void)ui_HomePage_battery_update(&status, s_home_scene_tick, 1U);
     ui_HomePage_weather_reset(s_home_render_scene, status.is_day, s_home_scene_tick);
+    ui_HomePage_sky_reset(s_home_scene_tick);
     egui_view_start_periodic(view, &s_home_page.timer, view, ui_HomePage_timer_cb, 50U);
 }
 
@@ -1113,6 +1304,7 @@ void ui_HomePage_screen_enter(void)
     ui_HomePage_update_render_snapshot(&status);
     (void)ui_HomePage_battery_update(&status, s_home_scene_tick, 1U);
     ui_HomePage_weather_reset(s_home_render_scene, status.is_day, s_home_scene_tick);
+    ui_HomePage_sky_reset(s_home_scene_tick);
 
 }
 
@@ -1160,6 +1352,7 @@ void ui_HomePage_set_animation_enabled(bool enable)
         ui_HomePage_update_render_snapshot(&status);
         (void)ui_HomePage_battery_update(&status, s_home_scene_tick, 1U);
         ui_HomePage_weather_reset(s_home_render_scene, status.is_day, s_home_scene_tick);
+        ui_HomePage_sky_reset(s_home_scene_tick);
         if ((ui_HomePage != NULL) && egui_view_get_visible(ui_HomePage))
         {
             egui_view_invalidate_full(ui_HomePage);
@@ -1241,13 +1434,19 @@ static void ui_HomePage_timer_cb(egui_timer_t *timer)
         if ((s_home_scene_state.is_valid != 0U) && ((now - s_home_scene_tick) > HOME_SCENE_RESUME_GAP_MS))
         {
             s_home_scene_state.is_valid = 0U;
+            ui_HomePage_sky_reset(now);
         }
         if (s_home_scene_state.is_valid == 0U)
         {
+            if (s_home_sky_state.is_valid == 0U)
+            {
+                ui_HomePage_sky_reset(now);
+            }
             egui_view_invalidate_full(view);
         }
         else
         {
+            ui_HomePage_sky_update(view, now);
             ui_HomePage_invalidate_precise_scene(view, &s_home_scene_state, &next_scene_state);
         }
         s_home_scene_state = next_scene_state;
@@ -1276,14 +1475,31 @@ static void ui_HomePage_timer_cb(egui_timer_t *timer)
     }
 }
 
-static void draw_cloud_group(egui_canvas_t *canvas, int base_x)
+static void ui_HomePage_draw_sky_group(egui_canvas_t *canvas,
+                                       const ui_home_sky_entity_t *entities,
+                                       uint8_t entity_count,
+                                       const home_sky_asset_t *(*get_asset)(uint8_t))
 {
-    uint32_t color_rgb = ui_HomePage_foreground_on_sky_rgb();
+    if ((canvas == NULL) || (entities == NULL) || (get_asset == NULL))
+    {
+        return;
+    }
 
-    draw_solid_if_visible(&home_cloud1_outline, canvas, base_x + HOME_CLOUD1_X, HOME_CLOUD1_Y,
-                          HOME_CLOUD1_W, HOME_CLOUD1_H, color_rgb);
-    draw_solid_if_visible(&home_cloud2_outline, canvas, base_x + HOME_CLOUD2_X, HOME_CLOUD2_Y,
-                          HOME_CLOUD2_W, HOME_CLOUD2_H, color_rgb);
+    for (uint8_t i = 0U; i < entity_count; i++)
+    {
+        const home_sky_asset_t *asset = get_asset(entities[i].asset_index);
+
+        if (asset != NULL)
+        {
+            draw_solid_if_visible(asset->image,
+                                  canvas,
+                                  entities[i].x,
+                                  entities[i].y,
+                                  asset->width,
+                                  asset->height,
+                                  0x000000);
+        }
+    }
 }
 
 static void ui_HomePage_draw_scene(egui_canvas_t *canvas)
@@ -1311,14 +1527,16 @@ static void ui_HomePage_draw_scene(egui_canvas_t *canvas)
     int bike_x = ui_HomePage_scene_bike_x(tick);
 
     /* 云：慢速滚动，裁掉屏幕外的副本 */
-    int cloud_base1 = ui_HomePage_scene_cloud_base(tick);
-    int cloud_wrap_width = HOME_SCENE_WRAP_W;
-    int cloud_base2 = cloud_base1 + cloud_wrap_width;
-
-    draw_cloud_group(canvas, cloud_base1);
-    if (cloud_base2 < SCREEN_W)
+    if (s_home_sky_state.is_valid != 0U)
     {
-        draw_cloud_group(canvas, cloud_base2);
+        ui_HomePage_draw_sky_group(canvas,
+                                   s_home_sky_state.clouds,
+                                   HOME_SKY_CLOUD_COUNT,
+                                   home_sky_cloud_get);
+        ui_HomePage_draw_sky_group(canvas,
+                                   s_home_sky_state.birds,
+                                   HOME_SKY_BIRD_COUNT,
+                                   home_sky_bird_get);
     }
 
     /* 地面：只画屏幕内可见的瓦片 */
