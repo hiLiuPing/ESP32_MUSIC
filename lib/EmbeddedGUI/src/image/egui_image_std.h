@@ -1,0 +1,178 @@
+#ifndef _EGUI_IMAGE_STD_H_
+#define _EGUI_IMAGE_STD_H_
+
+#include "egui_image.h"
+
+/* Set up for C function definitions, even when using C++ */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Image data type and alpha type macros are now in egui_image.h */
+
+typedef struct
+{
+    const void *data_buf;
+    const void *alpha_buf;
+    uint8_t data_type;  // image data type, EGUI_IMAGE_DATA_TYPE_RGB32, EGUI_IMAGE_DATA_TYPE_RGB565, EGUI_IMAGE_DATA_TYPE_GRAY8
+    uint8_t alpha_type; // image bit size 1, 2, 4, 8
+    uint8_t res_type;   // EGUI_RESOURCE_TYPE_INTERNAL, EGUI_RESOURCE_TYPE_EXTERNAL
+    uint16_t width;     // image width
+    uint16_t height;    // image height
+} egui_image_std_info_t;
+
+typedef struct egui_image_std egui_image_std_t;
+struct egui_image_std
+{
+    egui_image_t base;
+};
+
+#define EGUI_IMAGE_STD_ALPHA_OPAQUE_CACHE_SLOTS 4
+
+#if EGUI_CONFIG_FUNCTION_EXTERNAL_RESOURCE
+typedef struct
+{
+    const egui_image_std_info_t *image;
+    uint32_t data_source_row_size;
+    uint32_t alpha_source_row_size;
+    uint32_t data_row_start_offset;
+    uint32_t alpha_row_start_offset;
+    uint32_t data_row_size;
+    uint32_t alpha_row_size;
+    egui_dim_t chunk_row_start;
+    egui_dim_t chunk_row_count;
+    egui_dim_t rows_per_chunk;
+    egui_dim_t src_x_start;
+    uint32_t shared_generation;
+} egui_image_std_external_alpha_row_persistent_cache_t;
+
+typedef struct
+{
+    const egui_image_std_info_t *image;
+    uint32_t data_source_row_size;
+    uint32_t data_row_start_offset;
+    uint32_t data_row_size;
+    egui_dim_t chunk_row_start;
+    egui_dim_t chunk_row_count;
+    egui_dim_t rows_per_chunk;
+    uint32_t shared_generation;
+} egui_image_std_external_data_row_persistent_cache_t;
+
+typedef union
+{
+    egui_image_std_external_alpha_row_persistent_cache_t alpha;
+    egui_image_std_external_data_row_persistent_cache_t data;
+} egui_image_std_external_row_persistent_cache_storage_t;
+#endif
+
+#if EGUI_CONFIG_IMAGE_EXTERNAL_PERSISTENT_CACHE_MAX_BYTES > 0
+typedef struct
+{
+    const egui_image_std_info_t *image;
+    const void *data_addr;
+    const void *alpha_addr;
+    void *data_buf;
+    void *alpha_buf;
+    uint32_t data_size;
+    uint32_t alpha_size;
+    egui_image_std_info_t cached_info;
+} egui_image_std_external_persistent_cache_t;
+#endif
+
+#if EGUI_CONFIG_FUNCTION_IMAGE_FORMAT_RGB565
+typedef struct
+{
+    const egui_image_std_info_t *image;
+    uint8_t is_all_opaque;
+} egui_image_std_alpha_opaque_cache_t;
+#endif
+
+extern const egui_image_api_t egui_image_std_t_api_table;
+
+static inline void egui_image_std_blend_rgb565_src_pixel_fast(egui_color_int_t *dst, uint16_t src_pixel, egui_alpha_t alpha)
+{
+    if (alpha == 0)
+    {
+        return;
+    }
+
+#if EGUI_CONFIG_COLOR_DEPTH == 16
+    if (alpha > 251)
+    {
+        *dst = src_pixel;
+        return;
+    }
+    if (alpha < 4)
+    {
+        return;
+    }
+
+    {
+        uint16_t bg = *dst;
+        uint32_t bg_rb_g = (bg | ((uint32_t)bg << 16)) & 0x07E0F81FUL;
+        uint32_t fg_rb_g = (src_pixel | ((uint32_t)src_pixel << 16)) & 0x07E0F81FUL;
+        uint32_t result = (bg_rb_g + ((fg_rb_g - bg_rb_g) * ((uint32_t)alpha >> 3) >> 5)) & 0x07E0F81FUL;
+
+        *dst = (uint16_t)(result | (result >> 16));
+    }
+#else
+    {
+        egui_color_t color;
+
+        color.full = EGUI_COLOR_RGB565_TRANS(src_pixel);
+        if (alpha == EGUI_ALPHA_100)
+        {
+            *dst = color.full;
+        }
+        else
+        {
+            egui_rgb_mix_ptr((egui_color_t *)dst, &color, (egui_color_t *)dst, alpha);
+        }
+    }
+#endif
+}
+
+void egui_image_std_draw_image(const egui_image_t *self, egui_canvas_t *canvas, egui_dim_t x, egui_dim_t y);
+void egui_image_std_draw_image_resize(const egui_image_t *self, egui_canvas_t *canvas, egui_dim_t x, egui_dim_t y, egui_dim_t width, egui_dim_t height);
+int egui_image_std_rgb565_is_opaque_source(egui_canvas_t *canvas, const egui_image_std_info_t *image);
+int egui_image_std_get_linear_src_x_segment(const egui_dim_t *src_x_map, egui_dim_t start, egui_dim_t end, egui_dim_t *src_x_start);
+#if EGUI_CONFIG_FUNCTION_EXTERNAL_RESOURCE
+const egui_image_std_info_t *egui_image_std_prepare_external_persistent_cache(egui_canvas_t *canvas, const egui_image_std_info_t *image);
+
+typedef enum
+{
+    EGUI_IMAGE_EXTERNAL_ROW_CACHE_OWNER_NONE = 0,
+    EGUI_IMAGE_EXTERNAL_ROW_CACHE_OWNER_STD = 1,
+    EGUI_IMAGE_EXTERNAL_ROW_CACHE_OWNER_TRANSFORM = 2,
+    EGUI_IMAGE_EXTERNAL_ROW_CACHE_OWNER_RLE = 3,
+} egui_image_external_row_cache_owner_t;
+
+uint32_t egui_image_std_claim_shared_external_row_cache(egui_core_t *core, egui_image_external_row_cache_owner_t owner);
+uint16_t *egui_image_std_get_shared_external_data_cache(egui_core_t *core);
+uint8_t *egui_image_std_get_shared_external_alpha_cache(egui_core_t *core);
+#endif
+void egui_image_std_release_frame_cache(egui_core_t *core);
+
+void egui_image_std_draw_image_color(const egui_image_t *self, egui_canvas_t *canvas, egui_dim_t x, egui_dim_t y, egui_color_t color, egui_alpha_t alpha);
+void egui_image_std_draw_image_resize_color(const egui_image_t *self, egui_canvas_t *canvas, egui_dim_t x, egui_dim_t y, egui_dim_t width, egui_dim_t height,
+                                            egui_color_t color, egui_alpha_t alpha);
+int egui_image_std_blend_rgb565_masked_row(egui_canvas_t *canvas, egui_color_int_t *dst_row, const uint16_t *src_row, egui_dim_t count, egui_dim_t screen_x,
+                                           egui_dim_t screen_y, egui_alpha_t canvas_alpha);
+int egui_image_std_blend_rgb565_masked_row_block(egui_canvas_t *canvas, egui_color_int_t *dst_row, egui_dim_t dst_stride, const uint16_t *src_row,
+                                                 egui_dim_t src_stride, egui_dim_t row_count, egui_dim_t count, egui_dim_t screen_x, egui_dim_t screen_y,
+                                                 egui_alpha_t canvas_alpha);
+void egui_image_std_blend_rgb565_alpha8_masked_row(egui_canvas_t *canvas, egui_color_int_t *dst_row, const uint16_t *src_row, const uint8_t *src_alpha_row,
+                                                   egui_dim_t count, egui_dim_t screen_x, egui_dim_t screen_y, egui_alpha_t canvas_alpha);
+int egui_image_std_blend_rgb565_alpha8_masked_row_block(egui_canvas_t *canvas, egui_color_int_t *dst_row, egui_dim_t dst_stride, const uint16_t *src_row,
+                                                        egui_dim_t src_stride, const uint8_t *src_alpha_row, egui_dim_t alpha_stride, egui_dim_t row_count,
+                                                        egui_dim_t count, egui_dim_t screen_x, egui_dim_t screen_y, egui_alpha_t canvas_alpha);
+
+void egui_image_std_get_width_height(const egui_image_t *self, egui_dim_t *width, egui_dim_t *height);
+void egui_image_std_init(egui_image_t *self, const void *res);
+
+/* Ends C function definitions when using C++ */
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* _EGUI_IMAGE_STD_H_ */

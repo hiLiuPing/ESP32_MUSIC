@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <cstring>
 
-#include "bsp/bsp_display.h"
+#include "gui/egui_port.h"
 
 namespace {
 constexpr size_t MAX_PAGES = 5;
@@ -32,6 +32,12 @@ void ensure_initialized(GuiPageDescriptor *page) {
     if (page->init != nullptr) {
         page->init();
     }
+    if (page->view == nullptr) {
+        Serial.printf("[GUI] page %s did not create an EGUI view\n", page->name);
+        abort();
+    }
+    egui_core_add_user_root_view(page->view);
+    egui_view_set_visible(page->view, 0);
     page->initialized = true;
 }
 
@@ -69,6 +75,9 @@ bool switch_page(GuiPageDescriptor *target, bool record_history) {
     if ((current_page != nullptr) && (current_page->exit != nullptr)) {
         current_page->exit();
     }
+    if ((current_page != nullptr) && (current_page->view != nullptr)) {
+        egui_view_set_visible(current_page->view, 0);
+    }
     current_page = target;
     if (current_page->id == UiPage::Home) {
         history_size = 0;
@@ -76,6 +85,9 @@ bool switch_page(GuiPageDescriptor *target, bool record_history) {
     if (current_page->enter != nullptr) {
         current_page->enter();
     }
+    egui_view_set_visible(current_page->view, 1);
+    egui_view_invalidate_full(current_page->view);
+    egui_core_force_refresh(egui_port_core());
     dirty = true;
     return true;
 }
@@ -234,13 +246,7 @@ void gui_page_render(bool force) {
     if ((current_page == nullptr) || (!dirty && !force)) {
         return;
     }
-
-    ST7305_2p9_BW_DisplayDriver &display = bsp_display();
-    display.clearDisplay();
-    if (current_page->render != nullptr) {
-        current_page->render();
-    }
-    display.display();
+    egui_view_invalidate_full(current_page->view);
     dirty = false;
 }
 

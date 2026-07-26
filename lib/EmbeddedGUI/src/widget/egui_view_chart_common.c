@@ -1,0 +1,1328 @@
+#include <stdio.h>
+#include <assert.h>
+#include <string.h>
+
+#include "egui_view_chart_common.h"
+#include "core/egui_core.h"
+#include "font/egui_font_std.h"
+#include "resource/egui_resource.h"
+
+#if EGUI_CONFIG_FUNCTION_SUPPORT_MULTI_TOUCH
+#include "egui_view_group.h"
+#endif
+
+/**
+ * @file egui_view_chart_common.c
+ * @brief Shared text, layout, axis, legend, and zoom helpers for chart widgets.
+ *
+ * Line, scatter, and bar charts all
+ * build on the same axis-base state. This
+ * module centralizes the common math so those widgets stay visually and
+ * behaviorally aligned.
+ */
+
+typedef egui_dim_t (*egui_chart_get_font_height_fn)(egui_chart_axis_base_t *ab);
+typedef void (*egui_chart_draw_text_fn)(egui_canvas_t *canvas, egui_chart_axis_base_t *ab, const char *text, egui_region_t *text_rect, uint8_t align_type);
+
+struct egui_chart_text_ops
+{
+    egui_chart_get_font_height_fn get_font_height;
+    egui_chart_draw_text_fn draw_text;
+};
+
+/** Return the stock chart text height when no custom axis font is installed. */
+static egui_dim_t egui_chart_get_font_height_basic(egui_chart_axis_base_t *ab)
+{
+    (void)ab;
+    return egui_chart_get_font_height((const egui_font_t *)EGUI_CONFIG_FONT_DEFAULT);
+}
+
+/** Return the explicit axis font height, or a small fallback if rich text is misconfigured. */
+static egui_dim_t egui_chart_get_font_height_rich(egui_chart_axis_base_t *ab)
+{
+    if (ab == NULL || ab->font == NULL)
+    {
+        return 8;
+    }
+
+    return EGUI_FONT_STD_GET_FONT_HEIGHT(ab->font);
+}
+
+/** Draw one axis label using the default chart font path. */
+static void egui_chart_draw_text_basic(egui_canvas_t *canvas, egui_chart_axis_base_t *ab, const char *text, egui_region_t *text_rect, uint8_t align_type)
+{
+    const egui_font_t *font = (const egui_font_t *)EGUI_CONFIG_FONT_DEFAULT;
+
+    if (ab == NULL || text == NULL || text_rect == NULL)
+    {
+        return;
+    }
+
+    if (font != NULL)
+    {
+        egui_canvas_draw_text_in_rect(canvas, font, text, text_rect, align_type, ab->text_color, EGUI_ALPHA_100);
+    }
+}
+
+/** Draw one axis label using the caller-supplied chart font. */
+static void egui_chart_draw_text_rich(egui_canvas_t *canvas, egui_chart_axis_base_t *ab, const char *text, egui_region_t *text_rect, uint8_t align_type)
+{
+    if (ab == NULL || ab->font == NULL || text == NULL || text_rect == NULL)
+    {
+        return;
+    }
+
+    egui_canvas_draw_text_in_rect(canvas, ab->font, text, text_rect, align_type, ab->text_color, EGUI_ALPHA_100);
+}
+
+/** Built-in text operations used when charts rely on the default theme font. */
+static const egui_chart_text_ops_t egui_chart_basic_text_ops = {
+        .get_font_height = egui_chart_get_font_height_basic,
+        .draw_text = egui_chart_draw_text_basic,
+};
+
+/** Text operations used after `egui_chart_axis_base_set_font` installs a custom font. */
+static const egui_chart_text_ops_t egui_chart_rich_text_ops = {
+        .get_font_height = egui_chart_get_font_height_rich,
+        .draw_text = egui_chart_draw_text_rich,
+};
+
+/** Resolve the effective text height through the active text-ops table. */
+static egui_dim_t egui_chart_get_axis_font_height(egui_chart_axis_base_t *ab)
+{
+    if (ab == NULL || ab->text_ops == NULL || ab->text_ops->get_font_height == NULL)
+    {
+        return 8;
+    }
+
+    return ab->text_ops->get_font_height(ab);
+}
+
+/** Dispatch axis-label drawing through the active text-ops table. */
+static void egui_chart_draw_axis_text(egui_canvas_t *canvas, egui_chart_axis_base_t *ab, const char *text, egui_region_t *text_rect, uint8_t align_type)
+{
+    if (ab == NULL || ab->text_ops == NULL || ab->text_ops->draw_text == NULL)
+    {
+        return;
+    }
+
+    ab->text_ops->draw_text(canvas, ab, text, text_rect, align_type);
+}
+
+/**
+ * @brief Fast rectangle-vs-work-region test used to cull chart sub-elements.
+ *
+ * Chart axes can emit many ticks, labels, and grid lines. Culling them
+ * against
+ * the current work region avoids unnecessary draw calls during partial redraw.
+ */
+static int egui_chart_rect_intersects_work_region(egui_canvas_t *canvas, egui_dim_t x, egui_dim_t y, egui_dim_t width, egui_dim_t height)
+{
+    egui_region_t *work = egui_canvas_get_base_view_work_region(canvas);
+    egui_dim_t rect_x2;
+    egui_dim_t rect_y2;
+    egui_dim_t work_x2;
+    egui_dim_t work_y2;
+
+    if (work == NULL || width <= 0 || height <= 0 || egui_region_is_empty(work))
+    {
+        return 0;
+    }
+
+    rect_x2 = x + width;
+    rect_y2 = y + height;
+    work_x2 = work->location.x + work->size.width;
+    work_y2 = work->location.y + work->size.height;
+    return !(rect_x2 <= work->location.x || x >= work_x2 || rect_y2 <= work->location.y || y >= work_y2);
+}
+
+/** Export the active work-region bounds so axis helpers can cull by range. */
+static int egui_chart_get_work_region_bounds(egui_canvas_t *canvas, egui_dim_t *out_x1, egui_dim_t *out_y1, egui_dim_t *out_x2, egui_dim_t *out_y2)
+{
+    egui_region_t *work = egui_canvas_get_base_view_work_region(canvas);
+
+    if (out_x1 == NULL || out_y1 == NULL || out_x2 == NULL || out_y2 == NULL || work == NULL || egui_region_is_empty(work))
+    {
+        return 0;
+    }
+
+    *out_x1 = work->location.x;
+    *out_y1 = work->location.y;
+    *out_x2 = work->location.x + work->size.width;
+    *out_y2 = work->location.y + work->size.height;
+    return 1;
+}
+
+/** Honor `tick_step` filtering even when categorical samples are stored per slot. */
+static int egui_chart_is_tick_value_aligned(int16_t value, int16_t base, int16_t step)
+{
+    if (step <= 1)
+    {
+        return 1;
+    }
+
+    return ((int32_t)value - (int32_t)base) % step == 0;
+}
+
+/**
+ * @brief Draw a categorical X axis where labels are centered inside category slots.
+ *
+ * Bar-like charts usually iterate data by category index, but the
+ * visible slot
+ * range is trimmed against the work region first so off-screen categories do
+ * not generate labels or grid lines.
+ */
+static void egui_chart_draw_x_axis_categorical(egui_canvas_t *canvas, egui_chart_axis_base_t *ab, egui_region_t *plot_area, egui_dim_t font_h,
+                                               int16_t view_x_min, int16_t view_x_max)
+{
+    (void)view_x_min;
+    (void)view_x_max;
+
+    if (ab->series_count == 0 || ab->series[0].point_count == 0)
+    {
+        return;
+    }
+
+    char label_buf[8];
+    uint8_t n_cat = ab->series[0].point_count;
+    egui_dim_t slot_w = plot_area->size.width / n_cat;
+    uint8_t start_i = 0;
+    uint8_t end_i = n_cat;
+    egui_dim_t work_x1 = 0;
+    egui_dim_t work_y1 = 0;
+    egui_dim_t work_x2 = 0;
+    egui_dim_t work_y2 = 0;
+    int16_t tick_step = ab->axis_x.tick_step;
+    int can_draw_ticks = ab->axis_x.show_axis;
+    int can_draw_grid = ab->axis_x.show_grid;
+    int can_draw_labels = ab->axis_x.show_labels;
+
+    if (slot_w <= 0)
+    {
+        slot_w = 1;
+    }
+
+    if (egui_chart_get_work_region_bounds(canvas, &work_x1, &work_y1, &work_x2, &work_y2))
+    {
+        int32_t visible_start = (int32_t)work_x1 - plot_area->location.x - 13;
+        int32_t visible_end = (int32_t)work_x2 - plot_area->location.x + 13;
+
+        // Expand the visible range slightly so partially visible labels are still emitted.
+        if (visible_start > 0)
+        {
+            int32_t start_index = visible_start / slot_w;
+            if (start_index > 0)
+            {
+                start_index--;
+            }
+            if (start_index > 0)
+            {
+                start_i = (uint8_t)EGUI_MIN(start_index, n_cat);
+            }
+        }
+
+        if (visible_end < plot_area->size.width)
+        {
+            int32_t end_index = (visible_end + slot_w - 1) / slot_w + 1;
+            if (end_index < n_cat)
+            {
+                end_i = (uint8_t)end_index;
+            }
+        }
+
+        if (can_draw_ticks)
+        {
+            can_draw_ticks = egui_chart_rect_intersects_work_region(canvas, plot_area->location.x, plot_area->location.y + plot_area->size.height,
+                                                                    plot_area->size.width, 3);
+        }
+        if (can_draw_grid)
+        {
+            can_draw_grid =
+                    egui_chart_rect_intersects_work_region(canvas, plot_area->location.x, plot_area->location.y, plot_area->size.width, plot_area->size.height);
+        }
+        if (can_draw_labels)
+        {
+            can_draw_labels = egui_chart_rect_intersects_work_region(canvas, plot_area->location.x - 12, plot_area->location.y + plot_area->size.height + 3,
+                                                                     plot_area->size.width + 24, font_h);
+        }
+    }
+
+    if (!can_draw_ticks && !can_draw_grid && !can_draw_labels)
+    {
+        return;
+    }
+
+    for (uint8_t i = start_i; i < end_i; i++)
+    {
+        int draw_tick = egui_chart_is_tick_value_aligned(ab->series[0].points[i].x, ab->axis_x.min_value, tick_step);
+        egui_dim_t slot_center = plot_area->location.x + slot_w * i + slot_w / 2;
+
+        if (draw_tick && can_draw_ticks && egui_chart_rect_intersects_work_region(canvas, slot_center, plot_area->location.y + plot_area->size.height, 1, 3))
+        {
+            egui_canvas_draw_vline(canvas, slot_center, plot_area->location.y + plot_area->size.height, 3, ab->axis_color, EGUI_ALPHA_100);
+        }
+
+        if (draw_tick && can_draw_grid && i > 0)
+        {
+            egui_dim_t boundary = plot_area->location.x + slot_w * i;
+            if (egui_chart_rect_intersects_work_region(canvas, boundary, plot_area->location.y, 1, plot_area->size.height))
+            {
+                egui_canvas_draw_vline(canvas, boundary, plot_area->location.y, plot_area->size.height, ab->grid_color, EGUI_ALPHA_30);
+            }
+        }
+
+        if (draw_tick && can_draw_labels)
+        {
+            egui_chart_int_to_str(ab->series[0].points[i].x, label_buf, sizeof(label_buf));
+            EGUI_REGION_DEFINE(label_rect, slot_center - 12, plot_area->location.y + plot_area->size.height + 3, 24, font_h);
+            if (egui_chart_rect_intersects_work_region(canvas, label_rect.location.x, label_rect.location.y, label_rect.size.width, label_rect.size.height))
+            {
+                egui_chart_draw_axis_text(canvas, ab, label_buf, &label_rect, EGUI_ALIGN_HCENTER | EGUI_ALIGN_TOP);
+            }
+        }
+    }
+}
+
+/**
+ * @brief Draw a continuous X axis with auto or explicit tick stepping.
+ *
+ * The visible value range may be narrowed by zoom, so tick generation starts
+ *
+ * from the current viewport instead of the configured full axis range.
+ */
+static void egui_chart_draw_x_axis_continuous(egui_canvas_t *canvas, egui_chart_axis_base_t *ab, egui_region_t *plot_area, egui_dim_t font_h,
+                                              int16_t view_x_min, int16_t view_x_max)
+{
+    char label_buf[8];
+    egui_dim_t work_x1;
+    egui_dim_t work_y1;
+    egui_dim_t work_x2;
+    egui_dim_t work_y2;
+    int has_work_bounds = egui_chart_get_work_region_bounds(canvas, &work_x1, &work_y1, &work_x2, &work_y2);
+    int can_draw_ticks = ab->axis_x.show_axis;
+    int can_draw_grid = ab->axis_x.show_grid;
+    int can_draw_labels = ab->axis_x.show_labels;
+    int16_t step = ab->axis_x.tick_step;
+
+    if (has_work_bounds)
+    {
+        if (can_draw_ticks)
+        {
+            can_draw_ticks = egui_chart_rect_intersects_work_region(canvas, plot_area->location.x, plot_area->location.y + plot_area->size.height,
+                                                                    plot_area->size.width, 3);
+        }
+        if (can_draw_grid)
+        {
+            can_draw_grid =
+                    egui_chart_rect_intersects_work_region(canvas, plot_area->location.x, plot_area->location.y, plot_area->size.width, plot_area->size.height);
+        }
+        if (can_draw_labels)
+        {
+            can_draw_labels = egui_chart_rect_intersects_work_region(canvas, plot_area->location.x - 12, plot_area->location.y + plot_area->size.height + 3,
+                                                                     plot_area->size.width + 24, font_h);
+        }
+    }
+
+    if (!can_draw_ticks && !can_draw_grid && !can_draw_labels)
+    {
+        return;
+    }
+
+    if (step <= 0)
+    {
+        int16_t range = view_x_max - view_x_min;
+        uint8_t count = ab->axis_x.tick_count > 0 ? ab->axis_x.tick_count : 5;
+        step = range / count;
+        if (step <= 0)
+        {
+            step = 1;
+        }
+    }
+
+    // Align the first emitted tick to a step boundary inside the current viewport.
+    int16_t start_v = ((view_x_min + step - 1) / step) * step;
+    if (view_x_min <= 0 && start_v > view_x_min)
+    {
+        start_v = (view_x_min / step) * step;
+        if (start_v < view_x_min)
+        {
+            start_v += step;
+        }
+    }
+
+    for (int16_t v = start_v; v <= view_x_max; v += step)
+    {
+        egui_dim_t px = egui_chart_map_x(ab, v, plot_area->location.x, plot_area->size.width);
+        int tick_visible = !has_work_bounds ||
+                           egui_chart_rect_intersects_work_region(canvas, px, plot_area->location.y, 1,
+                                                                  plot_area->size.height + (can_draw_ticks ? 3 : 0) + (can_draw_labels ? font_h + 3 : 0));
+
+        if (can_draw_ticks && tick_visible)
+        {
+            egui_canvas_draw_vline(canvas, px, plot_area->location.y + plot_area->size.height, 3, ab->axis_color, EGUI_ALPHA_100);
+        }
+
+        if (can_draw_grid && tick_visible)
+        {
+            egui_canvas_draw_vline(canvas, px, plot_area->location.y, plot_area->size.height, ab->grid_color, EGUI_ALPHA_30);
+        }
+
+        if (can_draw_labels)
+        {
+            egui_chart_int_to_str(v, label_buf, sizeof(label_buf));
+            EGUI_REGION_DEFINE(label_rect, px - 12, plot_area->location.y + plot_area->size.height + 3, 24, font_h);
+            if (egui_chart_rect_intersects_work_region(canvas, label_rect.location.x, label_rect.location.y, label_rect.size.width, label_rect.size.height))
+            {
+                egui_chart_draw_axis_text(canvas, ab, label_buf, &label_rect, EGUI_ALIGN_HCENTER | EGUI_ALIGN_TOP);
+            }
+        }
+    }
+}
+
+// ============== Axis Base Init ==============
+
+/** Reset the shared axis-base state to the stock chart defaults. */
+void egui_chart_axis_base_init_defaults(egui_chart_axis_base_t *ab)
+{
+    ab->series = NULL;
+    ab->series_count = 0;
+
+    // default axis X
+    ab->axis_x.min_value = 0;
+    ab->axis_x.max_value = 100;
+    ab->axis_x.tick_step = 0;
+    ab->axis_x.tick_count = 5;
+    ab->axis_x.show_grid = 1;
+    ab->axis_x.show_labels = 1;
+    ab->axis_x.show_axis = 1;
+    ab->axis_x.title = NULL;
+
+    // default axis Y
+    ab->axis_y.min_value = 0;
+    ab->axis_y.max_value = 100;
+    ab->axis_y.tick_step = 0;
+    ab->axis_y.tick_count = 5;
+    ab->axis_y.show_grid = 1;
+    ab->axis_y.show_labels = 1;
+    ab->axis_y.show_axis = 1;
+    ab->axis_y.title = NULL;
+
+    // legend
+    ab->legend_pos = EGUI_CHART_LEGEND_NONE;
+
+    // style
+    ab->bg_color = EGUI_THEME_SURFACE;
+    ab->axis_color = EGUI_THEME_TEXT_PRIMARY;
+    ab->grid_color = EGUI_THEME_BORDER;
+    ab->text_color = EGUI_THEME_TEXT_SECONDARY;
+    ab->font = NULL;
+    ab->text_ops = &egui_chart_basic_text_ops;
+    ab->draw_axis_x = egui_chart_draw_x_axis_continuous;
+    ab->draw_legend_series = NULL;
+
+#if EGUI_CONFIG_FUNCTION_SUPPORT_MULTI_TOUCH
+    ab->zoom_enabled = 0;
+    ab->is_panning = 0;
+    ab->is_pinching = 0;
+    ab->view_x_min = ab->axis_x.min_value;
+    ab->view_x_max = ab->axis_x.max_value;
+    ab->view_y_min = ab->axis_y.min_value;
+    ab->view_y_max = ab->axis_y.max_value;
+    ab->pinch_start_dist = 0;
+    ab->pinch_start_dx_abs = 0;
+    ab->pinch_start_dy_abs = 0;
+#endif
+}
+
+/** Switch between slot-centered categorical ticks and continuous numeric ticks. */
+void egui_chart_axis_base_set_axis_x_categorical(egui_chart_axis_base_t *ab, uint8_t is_categorical)
+{
+    if (ab == NULL)
+    {
+        return;
+    }
+
+    ab->axis_x.is_categorical = is_categorical ? 1 : 0;
+    ab->draw_axis_x = ab->axis_x.is_categorical ? egui_chart_draw_x_axis_categorical : egui_chart_draw_x_axis_continuous;
+}
+
+/** Install a custom font and select the matching text operation table. */
+void egui_chart_axis_base_set_font(egui_chart_axis_base_t *ab, const egui_font_t *font)
+{
+    if (ab == NULL)
+    {
+        return;
+    }
+
+    ab->font = font;
+    ab->text_ops = (font == NULL) ? &egui_chart_basic_text_ops : &egui_chart_rich_text_ops;
+}
+
+// ============== Internal Helpers ==============
+
+/**
+ * @brief Convert a signed integer into ASCII text without libc formatting.
+ *
+ * Chart drawing calls this repeatedly for ticks, so the helper avoids
+ * pulling
+ * in heavier formatting paths.
+ */
+void egui_chart_int_to_str(int16_t value, char *buf, int buf_size)
+{
+    int pos = 0;
+    int16_t v = value;
+    char tmp[8];
+    int tmp_len = 0;
+
+    if (buf_size < 2)
+    {
+        if (buf_size > 0)
+        {
+            buf[0] = '\0';
+        }
+        return;
+    }
+
+    if (v < 0)
+    {
+        buf[pos++] = '-';
+        v = -v;
+    }
+
+    // Extract digits in reverse
+    if (v == 0)
+    {
+        tmp[tmp_len++] = '0';
+    }
+    else
+    {
+        while (v > 0 && tmp_len < (int)sizeof(tmp))
+        {
+            tmp[tmp_len++] = '0' + (v % 10);
+            v /= 10;
+        }
+    }
+
+    // Reverse copy to buf
+    for (int i = tmp_len - 1; i >= 0 && pos < buf_size - 1; i--)
+    {
+        buf[pos++] = tmp[i];
+    }
+    buf[pos] = '\0';
+}
+
+/** Return the font height used by shared chart layout, with a fixed fallback. */
+egui_dim_t egui_chart_get_font_height(const egui_font_t *font)
+{
+    if (font == NULL)
+    {
+        return 8; // fallback
+    }
+    return EGUI_FONT_STD_GET_FONT_HEIGHT(font);
+}
+
+/** Count the character width contribution of one signed integer label. */
+static uint8_t egui_chart_count_int_chars(int16_t value)
+{
+    uint8_t chars = 0;
+    int16_t v = value;
+    if (v <= 0)
+    {
+        chars++;
+        v = -v;
+    }
+    while (v > 0)
+    {
+        chars++;
+        v /= 10;
+    }
+    return chars;
+}
+
+/** Estimate how much left margin Y-axis labels need for the configured range. */
+static egui_dim_t egui_chart_get_y_label_width(egui_chart_axis_base_t *ab, egui_dim_t font_h)
+{
+    uint8_t min_chars = egui_chart_count_int_chars(ab->axis_y.min_value);
+    uint8_t max_chars = egui_chart_count_int_chars(ab->axis_y.max_value);
+    uint8_t chars = (min_chars > max_chars) ? min_chars : max_chars;
+    return (egui_dim_t)((font_h * chars + 1) / 2 + 6);
+}
+
+// ============== Viewport Helpers ==============
+
+/** Return the active X range, falling back to the configured axis bounds when not zoomed. */
+void egui_chart_get_view_x(egui_chart_axis_base_t *ab, int16_t *out_min, int16_t *out_max)
+{
+#if EGUI_CONFIG_FUNCTION_SUPPORT_MULTI_TOUCH
+    if (ab->zoom_enabled)
+    {
+        *out_min = ab->view_x_min;
+        *out_max = ab->view_x_max;
+        return;
+    }
+#endif
+    *out_min = ab->axis_x.min_value;
+    *out_max = ab->axis_x.max_value;
+}
+
+/** Return the active Y range, falling back to the configured axis bounds when not zoomed. */
+void egui_chart_get_view_y(egui_chart_axis_base_t *ab, int16_t *out_min, int16_t *out_max)
+{
+#if EGUI_CONFIG_FUNCTION_SUPPORT_MULTI_TOUCH
+    if (ab->zoom_enabled)
+    {
+        *out_min = ab->view_y_min;
+        *out_max = ab->view_y_max;
+        return;
+    }
+#endif
+    *out_min = ab->axis_y.min_value;
+    *out_max = ab->axis_y.max_value;
+}
+
+// ============== Coordinate Mapping ==============
+
+/**
+ * @brief Map one X data value into plot pixels over the active viewport.
+ *
+ * The rightmost data value maps to `plot_x + plot_w - 1` so the full range
+ *
+ * stays inside the plot box.
+ */
+egui_dim_t egui_chart_map_x(egui_chart_axis_base_t *ab, int16_t data_x, egui_dim_t plot_x, egui_dim_t plot_w)
+{
+    int16_t min_val, max_val;
+    egui_chart_get_view_x(ab, &min_val, &max_val);
+    int32_t range = (int32_t)max_val - (int32_t)min_val;
+    if (range <= 0)
+    {
+        return plot_x;
+    }
+    int32_t offset = (int32_t)data_x - (int32_t)min_val;
+    // Use (plot_w - 1) as pixel range: min_val maps to plot_x, max_val maps to plot_x + plot_w - 1
+    return plot_x + (egui_dim_t)(offset * (int32_t)(plot_w - 1) / range);
+}
+
+/**
+ * @brief Map one Y data value into plot pixels with screen-space inversion.
+ *
+ * Larger data values move upward on screen, so the mapping is inverted
+ *
+ * relative to the X axis.
+ */
+egui_dim_t egui_chart_map_y(egui_chart_axis_base_t *ab, int16_t data_y, egui_dim_t plot_y, egui_dim_t plot_h)
+{
+    int16_t min_val, max_val;
+    egui_chart_get_view_y(ab, &min_val, &max_val);
+    int32_t range = (int32_t)max_val - (int32_t)min_val;
+    if (range <= 0)
+    {
+        return plot_y;
+    }
+    int32_t offset = (int32_t)data_y - (int32_t)min_val;
+    // Use (plot_h - 1) as pixel range: min_val maps to plot_y + plot_h - 1, max_val maps to plot_y
+    return plot_y + (plot_h - 1) - (egui_dim_t)(offset * (int32_t)(plot_h - 1) / range);
+}
+
+// ============== Plot Area Calculation ==============
+
+/**
+ * @brief Reserve room for axes, labels, and legend, then return the plot box.
+ *
+ * The margins are intentionally approximate because charts only need a
+ * stable
+ * layout envelope, not text-tight packing.
+ */
+void egui_chart_calc_plot_area(egui_chart_axis_base_t *ab, egui_region_t *region, egui_region_t *plot_area)
+{
+    egui_dim_t font_h = egui_chart_get_axis_font_height(ab);
+
+    egui_dim_t margin_left = 0;
+    egui_dim_t margin_bottom = 0;
+    egui_dim_t margin_top = 2;
+    egui_dim_t margin_right = 2;
+
+    // Y axis labels on the left
+    if (ab->axis_y.show_labels)
+    {
+        margin_left = egui_chart_get_y_label_width(ab, font_h) + 2;
+    }
+    else if (ab->axis_y.show_axis)
+    {
+        margin_left = 2;
+    }
+
+    // X axis labels at the bottom
+    if (ab->axis_x.show_labels)
+    {
+        margin_bottom = font_h + 4; // font height + tick mark height
+        // Reserve right margin for last X label that extends beyond plot area
+        if (margin_right < font_h)
+        {
+            margin_right = font_h;
+        }
+    }
+    else if (ab->axis_x.show_axis)
+    {
+        margin_bottom = 2;
+    }
+
+    // Legend space
+    if (ab->legend_pos == EGUI_CHART_LEGEND_TOP)
+    {
+        margin_top += font_h + 4;
+    }
+    else if (ab->legend_pos == EGUI_CHART_LEGEND_BOTTOM)
+    {
+        margin_bottom += font_h + 4;
+    }
+    else if (ab->legend_pos == EGUI_CHART_LEGEND_RIGHT)
+    {
+        margin_right += font_h * 4; // approximate width for legend items
+    }
+
+    plot_area->location.x = region->location.x + margin_left;
+    plot_area->location.y = region->location.y + margin_top;
+    plot_area->size.width = region->size.width - margin_left - margin_right;
+    plot_area->size.height = region->size.height - margin_top - margin_bottom;
+
+    // Keep a minimum drawable interior so callers can still render degenerate charts safely.
+    if (plot_area->size.width < 10)
+    {
+        plot_area->size.width = 10;
+    }
+    if (plot_area->size.height < 10)
+    {
+        plot_area->size.height = 10;
+    }
+}
+
+// ============== Axis Drawing ==============
+
+/**
+ * @brief Draw shared X/Y axes, ticks, grid lines, and labels for axis charts.
+ *
+ * Each sub-part is culled against the canvas work region so partial
+ * redraw can
+ * skip off-screen or untouched axis fragments.
+ */
+void egui_chart_draw_axes(egui_canvas_t *canvas, egui_chart_axis_base_t *ab, egui_region_t *region, egui_region_t *plot_area)
+{
+    egui_dim_t font_h = egui_chart_get_axis_font_height(ab);
+    egui_dim_t work_x1 = 0;
+    egui_dim_t work_y1 = 0;
+    egui_dim_t work_x2 = 0;
+    egui_dim_t work_y2 = 0;
+    int has_work_bounds = egui_chart_get_work_region_bounds(canvas, &work_x1, &work_y1, &work_x2, &work_y2);
+    int can_draw_x_axis_line = ab->axis_x.show_axis;
+    int can_draw_y_axis_line = ab->axis_y.show_axis;
+    int can_draw_y_ticks = ab->axis_y.show_axis;
+    int can_draw_y_grid = ab->axis_y.show_grid;
+    int can_draw_y_labels = ab->axis_y.show_labels;
+    egui_dim_t y_label_w = 0;
+
+    // Get viewport range for tick iteration
+    int16_t view_x_min, view_x_max, view_y_min, view_y_max;
+    egui_chart_get_view_x(ab, &view_x_min, &view_x_max);
+    egui_chart_get_view_y(ab, &view_y_min, &view_y_max);
+
+    if (has_work_bounds)
+    {
+        if (can_draw_x_axis_line)
+        {
+            can_draw_x_axis_line = egui_chart_rect_intersects_work_region(canvas, plot_area->location.x, plot_area->location.y + plot_area->size.height,
+                                                                          plot_area->size.width, 1);
+        }
+        if (can_draw_y_axis_line)
+        {
+            can_draw_y_axis_line = egui_chart_rect_intersects_work_region(canvas, plot_area->location.x, plot_area->location.y, 1, plot_area->size.height);
+        }
+        if (can_draw_y_ticks)
+        {
+            can_draw_y_ticks = egui_chart_rect_intersects_work_region(canvas, plot_area->location.x - 3, plot_area->location.y, 3, plot_area->size.height);
+        }
+        if (can_draw_y_grid)
+        {
+            can_draw_y_grid =
+                    egui_chart_rect_intersects_work_region(canvas, plot_area->location.x, plot_area->location.y, plot_area->size.width, plot_area->size.height);
+        }
+        if (can_draw_y_labels)
+        {
+            y_label_w = egui_chart_get_y_label_width(ab, font_h);
+            can_draw_y_labels =
+                    egui_chart_rect_intersects_work_region(canvas, plot_area->location.x - y_label_w - 4, region->location.y, y_label_w, region->size.height);
+        }
+    }
+    else if (can_draw_y_labels)
+    {
+        y_label_w = egui_chart_get_y_label_width(ab, font_h);
+    }
+
+    // Draw X axis line
+    if (can_draw_x_axis_line)
+    {
+        egui_canvas_draw_hline(canvas, plot_area->location.x, plot_area->location.y + plot_area->size.height, plot_area->size.width, ab->axis_color,
+                               EGUI_ALPHA_100);
+    }
+
+    // Draw Y axis line
+    if (can_draw_y_axis_line)
+    {
+        egui_canvas_draw_vline(canvas, plot_area->location.x, plot_area->location.y, plot_area->size.height, ab->axis_color, EGUI_ALPHA_100);
+    }
+
+    // X axis ticks, grid, labels
+    if (ab->axis_x.show_labels || ab->axis_x.show_grid)
+    {
+        if (ab->draw_axis_x != NULL)
+        {
+            ab->draw_axis_x(canvas, ab, plot_area, font_h, view_x_min, view_x_max);
+        }
+    }
+
+    // Y axis ticks, grid, labels
+    if (can_draw_y_labels || can_draw_y_grid || can_draw_y_ticks)
+    {
+        int16_t step = ab->axis_y.tick_step;
+        if (step <= 0)
+        {
+            int16_t range = view_y_max - view_y_min;
+            uint8_t count = ab->axis_y.tick_count > 0 ? ab->axis_y.tick_count : 5;
+            step = range / count;
+            if (step <= 0)
+            {
+                step = 1;
+            }
+        }
+
+        // Align the first visible Y tick to the step grid before iterating upward.
+        int16_t start_v = ((view_y_min + step - 1) / step) * step;
+        if (view_y_min <= 0 && start_v > view_y_min)
+        {
+            start_v = (view_y_min / step) * step;
+            if (start_v < view_y_min)
+            {
+                start_v += step;
+            }
+        }
+
+        char label_buf[8];
+        for (int16_t v = start_v; v <= view_y_max; v += step)
+        {
+            egui_dim_t py = egui_chart_map_y(ab, v, plot_area->location.y, plot_area->size.height);
+            int tick_visible = !has_work_bounds || (py >= work_y1 && py < work_y2);
+
+            // Tick mark
+            if (can_draw_y_ticks && tick_visible)
+            {
+                egui_canvas_draw_hline(canvas, plot_area->location.x - 3, py, 3, ab->axis_color, EGUI_ALPHA_100);
+            }
+
+            // Grid line
+            if (can_draw_y_grid && tick_visible)
+            {
+                egui_canvas_draw_hline(canvas, plot_area->location.x, py, plot_area->size.width, ab->grid_color, EGUI_ALPHA_30);
+            }
+
+            // Label
+            if (can_draw_y_labels)
+            {
+                egui_chart_int_to_str(v, label_buf, sizeof(label_buf));
+                egui_dim_t label_y = py - font_h / 2;
+                if (label_y < region->location.y)
+                {
+                    label_y = region->location.y;
+                }
+                if (label_y + font_h > region->location.y + region->size.height)
+                {
+                    label_y = region->location.y + region->size.height - font_h;
+                }
+                EGUI_REGION_DEFINE(label_rect, plot_area->location.x - y_label_w - 4, label_y, y_label_w, font_h);
+                if (egui_chart_rect_intersects_work_region(canvas, label_rect.location.x, label_rect.location.y, label_rect.size.width, label_rect.size.height))
+                {
+                    egui_chart_draw_axis_text(canvas, ab, label_buf, &label_rect, EGUI_ALIGN_RIGHT | EGUI_ALIGN_VCENTER);
+                }
+            }
+        }
+    }
+}
+
+// ============== Legend Drawing (series) ==============
+
+/**
+ * @brief Draw the shared legend layout for axis-based charts.
+ *
+ * The legend uses a compact swatch-plus-text layout and supports top, bottom,
+ * and
+ * right placement without requiring each chart widget to duplicate the
+ * packing logic.
+ */
+void egui_chart_draw_legend_series(egui_canvas_t *canvas, egui_chart_axis_base_t *ab, egui_region_t *region, egui_region_t *plot_area)
+{
+    egui_dim_t font_h = egui_chart_get_axis_font_height(ab);
+    egui_dim_t swatch_size = font_h > 2 ? font_h - 2 : 4;
+    egui_dim_t item_gap = 6;
+    egui_dim_t text_w = font_h * 3;
+    egui_dim_t band_x;
+    egui_dim_t band_y;
+    egui_dim_t band_w;
+    egui_dim_t band_h;
+
+    uint8_t count = ab->series_count;
+    if (count == 0)
+    {
+        return;
+    }
+
+    // Calculate legend starting position
+    egui_dim_t lx, ly;
+    if (ab->legend_pos == EGUI_CHART_LEGEND_BOTTOM)
+    {
+        egui_dim_t total_w = count * (swatch_size + 2 + text_w + item_gap) - item_gap;
+        lx = region->location.x + (region->size.width - total_w) / 2;
+        if (lx < region->location.x)
+        {
+            lx = region->location.x;
+        }
+        ly = region->location.y + region->size.height - font_h - 2;
+    }
+    else if (ab->legend_pos == EGUI_CHART_LEGEND_TOP)
+    {
+        egui_dim_t total_w = count * (swatch_size + 2 + text_w + item_gap) - item_gap;
+        lx = region->location.x + (region->size.width - total_w) / 2;
+        if (lx < region->location.x)
+        {
+            lx = region->location.x;
+        }
+        ly = region->location.y + 1;
+    }
+    else if (ab->legend_pos == EGUI_CHART_LEGEND_RIGHT)
+    {
+        lx = plot_area->location.x + plot_area->size.width + 6;
+        ly = plot_area->location.y;
+    }
+    else
+    {
+        return;
+    }
+
+    if (ab->legend_pos == EGUI_CHART_LEGEND_RIGHT)
+    {
+        band_x = plot_area->location.x + plot_area->size.width + 6;
+        band_y = plot_area->location.y;
+        band_w = region->location.x + region->size.width - band_x;
+        band_h = count * (font_h + 2);
+    }
+    else
+    {
+        band_x = region->location.x;
+        band_y = ly;
+        band_w = region->size.width;
+        band_h = font_h;
+    }
+
+    if (!egui_chart_rect_intersects_work_region(canvas, band_x, band_y, band_w, band_h))
+    {
+        return;
+    }
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        egui_color_t color = ab->series[i].color;
+        const char *name = ab->series[i].name;
+
+        if (name == NULL)
+        {
+            continue;
+        }
+
+        // Draw color swatch
+        if (egui_chart_rect_intersects_work_region(canvas, lx, ly + 1, swatch_size, swatch_size))
+        {
+            egui_canvas_draw_rectangle_fill(canvas, lx, ly + 1, swatch_size, swatch_size, color, EGUI_ALPHA_100);
+        }
+
+        // Draw name text
+        EGUI_REGION_DEFINE(text_rect, lx + swatch_size + 2, ly, text_w, font_h);
+        if (egui_chart_rect_intersects_work_region(canvas, text_rect.location.x, text_rect.location.y, text_rect.size.width, text_rect.size.height))
+        {
+            egui_chart_draw_axis_text(canvas, ab, name, &text_rect, EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER);
+        }
+
+        // Advance position
+        if (ab->legend_pos == EGUI_CHART_LEGEND_RIGHT)
+        {
+            ly += font_h + 2;
+        }
+        else
+        {
+            lx += swatch_size + 2 + text_w + item_gap;
+        }
+    }
+}
+
+// ============== Zoom / Touch Handling ==============
+
+#if EGUI_CONFIG_FUNCTION_SUPPORT_MULTI_TOUCH
+
+/** Small integer absolute helper kept local to the chart zoom code paths. */
+static int32_t chart_iabs32(int32_t v)
+{
+    return (v >= 0) ? v : -v;
+}
+
+/** Integer square root used to approximate pinch distance without floating point. */
+static int32_t chart_isqrt(int32_t n)
+{
+    if (n <= 0)
+    {
+        return 0;
+    }
+    int32_t x = n;
+    int32_t y = (x + 1) / 2;
+    while (y < x)
+    {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    return x;
+}
+
+/**
+ * @brief Clamp the zoom viewport into the configured axis bounds.
+ *
+ * The helper also enforces a minimum visible range so repeated zoom-in
+ * gestures
+ * cannot collapse the viewport to a zero-sized range.
+ */
+void egui_chart_clamp_viewport(egui_chart_axis_base_t *ab)
+{
+    int16_t ax_min = ab->axis_x.min_value;
+    int16_t ax_max = ab->axis_x.max_value;
+    int16_t ay_min = ab->axis_y.min_value;
+    int16_t ay_max = ab->axis_y.max_value;
+
+    // Minimum visible range (1/8 of full range)
+    int16_t min_x_range = (ax_max - ax_min) / 8;
+    int16_t min_y_range = (ay_max - ay_min) / 8;
+    if (min_x_range < 2)
+    {
+        min_x_range = 2;
+    }
+    if (min_y_range < 2)
+    {
+        min_y_range = 2;
+    }
+
+    // Enforce minimum range
+    if (ab->view_x_max - ab->view_x_min < min_x_range)
+    {
+        int16_t center = (ab->view_x_min + ab->view_x_max) / 2;
+        ab->view_x_min = center - min_x_range / 2;
+        ab->view_x_max = center + min_x_range / 2;
+    }
+    if (ab->view_y_max - ab->view_y_min < min_y_range)
+    {
+        int16_t center = (ab->view_y_min + ab->view_y_max) / 2;
+        ab->view_y_min = center - min_y_range / 2;
+        ab->view_y_max = center + min_y_range / 2;
+    }
+
+    // Clamp to axis bounds
+    if (ab->view_x_min < ax_min)
+    {
+        ab->view_x_max += (ax_min - ab->view_x_min);
+        ab->view_x_min = ax_min;
+    }
+    if (ab->view_x_max > ax_max)
+    {
+        ab->view_x_min -= (ab->view_x_max - ax_max);
+        ab->view_x_max = ax_max;
+    }
+    if (ab->view_x_min < ax_min)
+    {
+        ab->view_x_min = ax_min;
+    }
+
+    if (ab->view_y_min < ay_min)
+    {
+        ab->view_y_max += (ay_min - ab->view_y_min);
+        ab->view_y_min = ay_min;
+    }
+    if (ab->view_y_max > ay_max)
+    {
+        ab->view_y_min -= (ab->view_y_max - ay_max);
+        ab->view_y_max = ay_max;
+    }
+    if (ab->view_y_min < ay_min)
+    {
+        ab->view_y_min = ay_min;
+    }
+}
+
+/** Report whether the live viewport differs from the configured full chart range. */
+int egui_chart_is_zoomed(egui_chart_axis_base_t *ab)
+{
+    return (ab->view_x_min > ab->axis_x.min_value || ab->view_x_max < ab->axis_x.max_value || ab->view_y_min > ab->axis_y.min_value ||
+            ab->view_y_max < ab->axis_y.max_value);
+}
+
+/** Zoom both axes symmetrically around the current viewport center. */
+void egui_chart_apply_zoom(egui_chart_axis_base_t *ab, int zoom_in)
+{
+    int32_t x_range = (int32_t)ab->view_x_max - (int32_t)ab->view_x_min;
+    int32_t y_range = (int32_t)ab->view_y_max - (int32_t)ab->view_y_min;
+
+    int32_t dx, dy;
+    if (zoom_in)
+    {
+        dx = x_range / 10;
+        dy = y_range / 10;
+    }
+    else
+    {
+        dx = -(x_range / 8);
+        dy = -(y_range / 8);
+    }
+
+    if (dx == 0)
+    {
+        dx = zoom_in ? 1 : -1;
+    }
+    if (dy == 0)
+    {
+        dy = zoom_in ? 1 : -1;
+    }
+
+    ab->view_x_min += (int16_t)dx;
+    ab->view_x_max -= (int16_t)dx;
+    ab->view_y_min += (int16_t)dy;
+    ab->view_y_max -= (int16_t)dy;
+
+    egui_chart_clamp_viewport(ab);
+}
+
+/** Zoom only the requested axes while leaving the other axis unchanged. */
+void egui_chart_apply_zoom_axis(egui_chart_axis_base_t *ab, int zoom_in, int axis_x, int axis_y)
+{
+    int32_t x_range = (int32_t)ab->view_x_max - (int32_t)ab->view_x_min;
+    int32_t y_range = (int32_t)ab->view_y_max - (int32_t)ab->view_y_min;
+
+    int32_t dx = 0;
+    int32_t dy = 0;
+    if (axis_x)
+    {
+        dx = zoom_in ? (x_range / 10) : -(x_range / 8);
+        if (dx == 0)
+        {
+            dx = zoom_in ? 1 : -1;
+        }
+    }
+    if (axis_y)
+    {
+        dy = zoom_in ? (y_range / 10) : -(y_range / 8);
+        if (dy == 0)
+        {
+            dy = zoom_in ? 1 : -1;
+        }
+    }
+
+    ab->view_x_min += (int16_t)dx;
+    ab->view_x_max -= (int16_t)dx;
+    ab->view_y_min += (int16_t)dy;
+    ab->view_y_max -= (int16_t)dy;
+
+    egui_chart_clamp_viewport(ab);
+}
+
+/**
+ * @brief Shared wheel, pan, and pinch handler for zoomable chart widgets.
+ *
+ * Scroll zooms around the current viewport center. Single-finger move pans
+ * when
+ * the chart is already zoomed. Two-finger move rescales the stored pinch-start
+ * viewport using axis-aligned gesture deltas.
+ */
+int egui_chart_axis_on_touch_event(egui_view_t *self, egui_chart_axis_base_t *ab, egui_motion_event_t *event)
+{
+    if (!ab->zoom_enabled)
+    {
+        return egui_view_on_touch_event(self, event);
+    }
+
+    switch (event->type)
+    {
+    case EGUI_MOTION_EVENT_ACTION_SCROLL:
+    {
+        if (event->scroll_delta > 0)
+        {
+            egui_chart_apply_zoom(ab, 1);
+        }
+        else if (event->scroll_delta < 0)
+        {
+            egui_chart_apply_zoom(ab, 0);
+        }
+        egui_view_invalidate(self);
+        return 1;
+    }
+
+    case EGUI_MOTION_EVENT_ACTION_DOWN:
+    {
+        ab->is_panning = 0;
+        ab->is_pinching = 0;
+        ab->pan_last_x = event->location.x;
+        ab->pan_last_y = event->location.y;
+        if (egui_chart_is_zoomed(ab))
+        {
+            return 1;
+        }
+        return 0;
+    }
+
+    case EGUI_MOTION_EVENT_ACTION_MOVE:
+    {
+        if (event->pointer_count >= 2 && !ab->is_panning)
+        {
+            int32_t dx = (int32_t)event->locations[1].x - (int32_t)event->locations[0].x;
+            int32_t dy = (int32_t)event->locations[1].y - (int32_t)event->locations[0].y;
+            int32_t dx_abs = chart_iabs32(dx);
+            int32_t dy_abs = chart_iabs32(dy);
+
+            if (dx_abs <= 0)
+            {
+                dx_abs = 1;
+            }
+            if (dy_abs <= 0)
+            {
+                dy_abs = 1;
+            }
+
+            if (ab->is_pinching && ab->pinch_start_dx_abs > 0 && ab->pinch_start_dy_abs > 0)
+            {
+                int32_t start_x_range = (int32_t)ab->pinch_start_view_x_max - (int32_t)ab->pinch_start_view_x_min;
+                int32_t start_y_range = (int32_t)ab->pinch_start_view_y_max - (int32_t)ab->pinch_start_view_y_min;
+
+                int32_t new_x_range = start_x_range * ab->pinch_start_dx_abs / dx_abs;
+                int32_t new_y_range = start_y_range * ab->pinch_start_dy_abs / dy_abs;
+
+                if (new_x_range < 2)
+                {
+                    new_x_range = 2;
+                }
+                if (new_y_range < 2)
+                {
+                    new_y_range = 2;
+                }
+
+                int16_t cx = (ab->pinch_start_view_x_min + ab->pinch_start_view_x_max) / 2;
+                int16_t cy = (ab->pinch_start_view_y_min + ab->pinch_start_view_y_max) / 2;
+
+                ab->view_x_min = cx - (int16_t)(new_x_range / 2);
+                ab->view_x_max = cx + (int16_t)(new_x_range / 2);
+                ab->view_y_min = cy - (int16_t)(new_y_range / 2);
+                ab->view_y_max = cy + (int16_t)(new_y_range / 2);
+
+                egui_chart_clamp_viewport(ab);
+                egui_view_invalidate(self);
+            }
+            return 1;
+        }
+
+        // Single-finger move pans the visible data window only after zoom has narrowed it.
+        if (egui_chart_is_zoomed(ab) && event->pointer_count <= 1)
+        {
+            egui_dim_t dx_px = event->location.x - ab->pan_last_x;
+            egui_dim_t dy_px = event->location.y - ab->pan_last_y;
+
+            egui_region_t region;
+            egui_view_get_work_region(self, &region);
+            egui_region_t plot_area;
+            egui_chart_calc_plot_area(ab, &region, &plot_area);
+
+            int32_t x_range = (int32_t)ab->view_x_max - (int32_t)ab->view_x_min;
+            int32_t y_range = (int32_t)ab->view_y_max - (int32_t)ab->view_y_min;
+
+            if (plot_area.size.width > 0 && plot_area.size.height > 0)
+            {
+                int16_t data_dx = (int16_t)(-(int32_t)dx_px * x_range / plot_area.size.width);
+                int16_t data_dy = (int16_t)((int32_t)dy_px * y_range / plot_area.size.height);
+
+                if (data_dx != 0 || data_dy != 0)
+                {
+                    if (!ab->is_panning)
+                    {
+                        ab->is_panning = 1;
+                        if (self->parent != NULL)
+                        {
+                            egui_view_group_request_disallow_intercept_touch_event((egui_view_t *)self->parent, 1);
+                        }
+                    }
+
+                    ab->view_x_min += data_dx;
+                    ab->view_x_max += data_dx;
+                    ab->view_y_min += data_dy;
+                    ab->view_y_max += data_dy;
+                    egui_chart_clamp_viewport(ab);
+                    egui_view_invalidate(self);
+                }
+            }
+
+            ab->pan_last_x = event->location.x;
+            ab->pan_last_y = event->location.y;
+            return 1;
+        }
+        return 0;
+    }
+
+    case EGUI_MOTION_EVENT_ACTION_POINTER_DOWN:
+    {
+        // Snapshot the starting viewport so the pinch gesture can scale both axes from one baseline.
+        ab->is_pinching = 1;
+        ab->is_panning = 0;
+        int32_t dx = (int32_t)event->locations[1].x - (int32_t)event->locations[0].x;
+        int32_t dy = (int32_t)event->locations[1].y - (int32_t)event->locations[0].y;
+        ab->pinch_start_dx_abs = chart_iabs32(dx);
+        ab->pinch_start_dy_abs = chart_iabs32(dy);
+        if (ab->pinch_start_dx_abs <= 0)
+        {
+            ab->pinch_start_dx_abs = 1;
+        }
+        if (ab->pinch_start_dy_abs <= 0)
+        {
+            ab->pinch_start_dy_abs = 1;
+        }
+        ab->pinch_start_dist = chart_isqrt(dx * dx + dy * dy);
+        ab->pinch_start_view_x_min = ab->view_x_min;
+        ab->pinch_start_view_x_max = ab->view_x_max;
+        ab->pinch_start_view_y_min = ab->view_y_min;
+        ab->pinch_start_view_y_max = ab->view_y_max;
+
+        if (self->parent != NULL)
+        {
+            egui_view_group_request_disallow_intercept_touch_event((egui_view_t *)self->parent, 1);
+        }
+        return 1;
+    }
+
+    case EGUI_MOTION_EVENT_ACTION_POINTER_UP:
+    {
+        ab->is_pinching = 0;
+        return 1;
+    }
+
+    case EGUI_MOTION_EVENT_ACTION_UP:
+    case EGUI_MOTION_EVENT_ACTION_CANCEL:
+    {
+        ab->is_panning = 0;
+        ab->is_pinching = 0;
+        return egui_chart_is_zoomed(ab) ? 1 : 0;
+    }
+
+    default:
+        break;
+    }
+
+    return 0;
+}
+
+#endif // EGUI_CONFIG_FUNCTION_SUPPORT_MULTI_TOUCH

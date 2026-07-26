@@ -1,0 +1,1384 @@
+#include <string.h>
+
+#include "egui_image_file.h"
+#include "egui_image_std.h"
+#include "core/egui_api.h"
+#include "canvas/egui_canvas.h"
+#include "core/egui_core.h"
+
+#if EGUI_CONFIG_FUNCTION_IMAGE_FILE
+
+#ifndef EGUI_IMAGE_FILE_FAST_PATH_ENABLE
+#define EGUI_IMAGE_FILE_FAST_PATH_ENABLE 1
+#endif
+
+static void egui_image_file_api_draw_image_resize(const egui_image_t *base, egui_canvas_t *canvas, egui_dim_t x, egui_dim_t y, egui_dim_t width,
+                                                  egui_dim_t height);
+
+static egui_image_file_t *egui_image_file_from_base(const egui_image_t *self)
+{
+    if (self == NULL || self->res == NULL)
+    {
+        return NULL;
+    }
+
+    return (egui_image_file_t *)self->res;
+}
+
+static egui_core_t *egui_image_file_get_core(const egui_image_file_t *self, const egui_canvas_t *canvas)
+{
+    if (self != NULL && self->core != NULL)
+    {
+        return self->core;
+    }
+
+    if (canvas != NULL)
+    {
+        return canvas->core;
+    }
+
+    return NULL;
+}
+
+static void egui_image_file_invalidate_row_cache(egui_image_file_t *self)
+{
+    self->cached_row = 0xFFFFu;
+    self->row_cache_valid = 0;
+    self->cached_row_secondary = 0xFFFFu;
+    self->row_cache_secondary_valid = 0;
+}
+
+static void egui_image_file_swap_row_cache_slots(egui_image_file_t *self)
+{
+    uint16_t *row_pixels;
+    uint8_t *row_alpha;
+    uint16_t row_capacity;
+    uint16_t alpha_capacity;
+    uint16_t cached_row;
+    uint8_t row_cache_valid;
+
+    row_pixels = self->row_pixels;
+    self->row_pixels = self->row_pixels_secondary;
+    self->row_pixels_secondary = row_pixels;
+
+    row_alpha = self->row_alpha;
+    self->row_alpha = self->row_alpha_secondary;
+    self->row_alpha_secondary = row_alpha;
+
+    row_capacity = self->row_capacity;
+    self->row_capacity = self->row_capacity_secondary;
+    self->row_capacity_secondary = row_capacity;
+
+    alpha_capacity = self->alpha_capacity;
+    self->alpha_capacity = self->alpha_capacity_secondary;
+    self->alpha_capacity_secondary = alpha_capacity;
+
+    cached_row = self->cached_row;
+    self->cached_row = self->cached_row_secondary;
+    self->cached_row_secondary = cached_row;
+
+    row_cache_valid = self->row_cache_valid;
+    self->row_cache_valid = self->row_cache_secondary_valid;
+    self->row_cache_secondary_valid = row_cache_valid;
+}
+
+static void egui_image_file_reset_runtime(egui_image_file_t *self)
+{
+    self->decoder = NULL;
+    self->decoder_ctx = NULL;
+    self->file_handle = NULL;
+    self->active_io = NULL;
+    self->width = 0;
+    self->height = 0;
+    self->has_alpha = 0;
+    egui_image_file_invalidate_row_cache(self);
+}
+
+static int egui_image_file_has_intrinsic_resize(const egui_image_file_t *self)
+{
+    return self != NULL && self->resize_enabled != 0U && self->resize_width > 0U && self->resize_height > 0U;
+}
+
+static int egui_image_file_get_intrinsic_resize(const egui_image_file_t *self, egui_dim_t *width, egui_dim_t *height)
+{
+    if (!egui_image_file_has_intrinsic_resize(self))
+    {
+        return 0;
+    }
+
+    if (width != NULL)
+    {
+        *width = self->resize_width;
+    }
+    if (height != NULL)
+    {
+        *height = self->resize_height;
+    }
+    return 1;
+}
+
+static void egui_image_file_close_runtime(egui_image_file_t *self)
+{
+    if (self->decoder != NULL && self->decoder->close != NULL && self->decoder_ctx != NULL)
+    {
+        self->decoder->close(self->decoder_ctx);
+    }
+    if (self->active_io != NULL && self->active_io->close != NULL && self->file_handle != NULL)
+    {
+        self->active_io->close(self->active_io->user_data, self->file_handle);
+    }
+
+    egui_image_file_reset_runtime(self);
+}
+
+static int egui_image_file_alloc_copy_string(egui_core_t *core, char **target, const char *value)
+{
+    size_t len;
+    char *copy;
+
+    if (target == NULL)
+    {
+        return 0;
+    }
+
+    if (value == NULL || value[0] == '\0')
+    {
+        if (*target != NULL)
+        {
+            egui_free(core, *target);
+            *target = NULL;
+        }
+        return 1;
+    }
+
+    len = strlen(value);
+    copy = (char *)egui_malloc(core, (int)(len + 1));
+    if (copy == NULL)
+    {
+        return 0;
+    }
+
+    memcpy(copy, value, len + 1);
+    if (*target != NULL)
+    {
+        egui_free(core, *target);
+    }
+    *target = copy;
+    return 1;
+}
+
+static int egui_image_file_prepare_row_buffers(egui_image_file_t *self)
+{
+    egui_core_t *core;
+    uint16_t *new_pixels = self->row_pixels;
+    uint8_t *new_alpha = self->row_alpha;
+    uint16_t width = self->width;
+
+    core = egui_image_file_get_core(self, NULL);
+
+    if (width == 0)
+    {
+        self->status = EGUI_IMAGE_FILE_STATUS_OPEN_DECODER_FAIL;
+        return 0;
+    }
+
+    if (self->row_capacity < width)
+    {
+        new_pixels = (uint16_t *)egui_malloc(core, (int)((uint32_t)width * sizeof(uint16_t)));
+        if (new_pixels == NULL)
+        {
+            self->status = EGUI_IMAGE_FILE_STATUS_OOM;
+            return 0;
+        }
+    }
+
+    if (self->has_alpha)
+    {
+        if (self->alpha_capacity < width)
+        {
+            new_alpha = (uint8_t *)egui_malloc(core, (int)width);
+            if (new_alpha == NULL)
+            {
+                if (new_pixels != self->row_pixels)
+                {
+                    egui_free(core, new_pixels);
+                }
+                self->status = EGUI_IMAGE_FILE_STATUS_OOM;
+                return 0;
+            }
+        }
+    }
+    else if (self->row_alpha != NULL)
+    {
+        egui_free(core, self->row_alpha);
+        self->row_alpha = NULL;
+        self->alpha_capacity = 0;
+    }
+
+    if (new_pixels != self->row_pixels)
+    {
+        if (self->row_pixels != NULL)
+        {
+            egui_free(core, self->row_pixels);
+        }
+        self->row_pixels = new_pixels;
+        self->row_capacity = width;
+    }
+
+    if (self->has_alpha && new_alpha != self->row_alpha)
+    {
+        if (self->row_alpha != NULL)
+        {
+            egui_free(core, self->row_alpha);
+        }
+        self->row_alpha = new_alpha;
+        self->alpha_capacity = width;
+    }
+
+    return 1;
+}
+
+static int egui_image_file_prepare_secondary_row_buffers(egui_image_file_t *self)
+{
+    egui_core_t *core;
+    uint16_t *new_pixels = self->row_pixels_secondary;
+    uint8_t *new_alpha = self->row_alpha_secondary;
+    uint16_t width = self->width;
+
+    core = egui_image_file_get_core(self, NULL);
+
+    if (width == 0)
+    {
+        self->status = EGUI_IMAGE_FILE_STATUS_OPEN_DECODER_FAIL;
+        return 0;
+    }
+
+    if (self->row_capacity_secondary < width)
+    {
+        new_pixels = (uint16_t *)egui_malloc(core, (int)((uint32_t)width * sizeof(uint16_t)));
+        if (new_pixels == NULL)
+        {
+            self->status = EGUI_IMAGE_FILE_STATUS_OOM;
+            return 0;
+        }
+    }
+
+    if (self->has_alpha)
+    {
+        if (self->alpha_capacity_secondary < width)
+        {
+            new_alpha = (uint8_t *)egui_malloc(core, (int)width);
+            if (new_alpha == NULL)
+            {
+                if (new_pixels != self->row_pixels_secondary)
+                {
+                    egui_free(core, new_pixels);
+                }
+                self->status = EGUI_IMAGE_FILE_STATUS_OOM;
+                return 0;
+            }
+        }
+    }
+    else if (self->row_alpha_secondary != NULL)
+    {
+        egui_free(core, self->row_alpha_secondary);
+        self->row_alpha_secondary = NULL;
+        self->alpha_capacity_secondary = 0;
+    }
+
+    if (new_pixels != self->row_pixels_secondary)
+    {
+        if (self->row_pixels_secondary != NULL)
+        {
+            egui_free(core, self->row_pixels_secondary);
+        }
+        self->row_pixels_secondary = new_pixels;
+        self->row_capacity_secondary = width;
+    }
+
+    if (self->has_alpha && new_alpha != self->row_alpha_secondary)
+    {
+        if (self->row_alpha_secondary != NULL)
+        {
+            egui_free(core, self->row_alpha_secondary);
+        }
+        self->row_alpha_secondary = new_alpha;
+        self->alpha_capacity_secondary = width;
+    }
+
+    return 1;
+}
+
+static uint16_t egui_image_file_resize_axis_map(uint16_t src_extent, egui_dim_t dest_extent, egui_dim_t dest_pos)
+{
+    uint32_t scaled_pos;
+    uint16_t mapped_pos = 0;
+
+    if (src_extent > 0 && dest_extent > 0 && dest_pos > 0)
+    {
+        scaled_pos = (uint32_t)dest_pos * (uint32_t)src_extent;
+        mapped_pos = (uint16_t)(scaled_pos / (uint32_t)dest_extent);
+        if (mapped_pos >= src_extent)
+        {
+            mapped_pos = src_extent - 1;
+        }
+    }
+
+    return mapped_pos;
+}
+
+static egui_dim_t egui_image_file_resize_axis_run_end(uint16_t src_extent, egui_dim_t dest_extent, uint16_t src_pos)
+{
+    if (src_extent == 0 || dest_extent <= 0)
+    {
+        return 0;
+    }
+    if ((uint16_t)(src_pos + 1u) >= src_extent)
+    {
+        return dest_extent;
+    }
+
+    return (egui_dim_t)(((uint32_t)(src_pos + 1u) * (uint32_t)dest_extent + (uint32_t)src_extent - 1u) / (uint32_t)src_extent);
+}
+
+static int egui_image_file_try_open(egui_image_file_t *self, const egui_canvas_t *canvas)
+{
+    egui_core_t *core;
+    const egui_image_file_io_t *io;
+    void *file_handle;
+    uint8_t i;
+    int saw_matching_decoder = 0;
+
+    if (self == NULL)
+    {
+        return 0;
+    }
+    if (self->decoder_ctx != NULL)
+    {
+        self->status = EGUI_IMAGE_FILE_STATUS_READY;
+        return 1;
+    }
+    if (self->path == NULL || self->path[0] == '\0')
+    {
+        self->status = EGUI_IMAGE_FILE_STATUS_NO_PATH;
+        return 0;
+    }
+
+    core = egui_image_file_get_core(self, canvas);
+    io = (self->io != NULL) ? self->io : (core != NULL ? core->asset.image_file_default_io : NULL);
+    if (io == NULL || io->open == NULL || io->close == NULL)
+    {
+        self->status = EGUI_IMAGE_FILE_STATUS_NO_IO;
+        return 0;
+    }
+
+    file_handle = io->open(io->user_data, self->path);
+    if (file_handle == NULL)
+    {
+        self->status = EGUI_IMAGE_FILE_STATUS_OPEN_FILE_FAIL;
+        return 0;
+    }
+
+    for (i = 0; core != NULL && i < core->asset.image_file_decoder_count; i++)
+    {
+        const egui_image_file_decoder_t *decoder = core->asset.image_file_decoders[i];
+        void *decoder_ctx = NULL;
+        egui_image_file_open_result_t open_result = {0, 0, 0, 0};
+
+        if (decoder == NULL || decoder->open == NULL || decoder->read_row == NULL)
+        {
+            continue;
+        }
+        if (decoder->match != NULL && !decoder->match(self->path))
+        {
+            continue;
+        }
+
+        saw_matching_decoder = 1;
+        if (io->seek != NULL)
+        {
+            io->seek(io->user_data, file_handle, 0, EGUI_IMAGE_FILE_SEEK_SET);
+        }
+        if (!decoder->open(io, file_handle, self->path, &decoder_ctx, &open_result))
+        {
+            if (decoder->close != NULL && decoder_ctx != NULL)
+            {
+                decoder->close(decoder_ctx);
+            }
+            continue;
+        }
+        if (open_result.width == 0 || open_result.height == 0)
+        {
+            if (decoder->close != NULL && decoder_ctx != NULL)
+            {
+                decoder->close(decoder_ctx);
+            }
+            continue;
+        }
+
+        self->decoder = decoder;
+        self->decoder_ctx = decoder_ctx;
+        self->width = open_result.width;
+        self->height = open_result.height;
+        self->has_alpha = open_result.has_alpha ? 1u : 0u;
+        if (open_result.keep_file_open)
+        {
+            self->file_handle = file_handle;
+            self->active_io = io;
+        }
+        else
+        {
+            io->close(io->user_data, file_handle);
+            self->file_handle = NULL;
+            self->active_io = NULL;
+        }
+        self->status = EGUI_IMAGE_FILE_STATUS_READY;
+        egui_image_file_invalidate_row_cache(self);
+        return 1;
+    }
+
+    io->close(io->user_data, file_handle);
+    self->status = saw_matching_decoder ? EGUI_IMAGE_FILE_STATUS_OPEN_DECODER_FAIL : EGUI_IMAGE_FILE_STATUS_NO_DECODER;
+    return 0;
+}
+
+static int egui_image_file_load_row(egui_image_file_t *self, uint16_t row)
+{
+    if (self == NULL)
+    {
+        return 0;
+    }
+    if (row >= self->height)
+    {
+        return 0;
+    }
+    if (!egui_image_file_try_open(self, NULL))
+    {
+        return 0;
+    }
+    if (!egui_image_file_prepare_row_buffers(self))
+    {
+        return 0;
+    }
+    if (self->row_cache_valid && self->cached_row == row)
+    {
+        return 1;
+    }
+    if (self->row_cache_secondary_valid && self->cached_row_secondary == row)
+    {
+        egui_image_file_swap_row_cache_slots(self);
+        return 1;
+    }
+    if (self->decoder == NULL || self->decoder->read_row == NULL)
+    {
+        self->status = EGUI_IMAGE_FILE_STATUS_OPEN_DECODER_FAIL;
+        return 0;
+    }
+    if (self->row_cache_valid)
+    {
+        if (!egui_image_file_prepare_secondary_row_buffers(self))
+        {
+            return 0;
+        }
+
+        memcpy(self->row_pixels_secondary, self->row_pixels, (size_t)self->width * sizeof(uint16_t));
+        if (self->has_alpha && self->row_alpha != NULL && self->row_alpha_secondary != NULL)
+        {
+            memcpy(self->row_alpha_secondary, self->row_alpha, (size_t)self->width);
+        }
+        self->cached_row_secondary = self->cached_row;
+        self->row_cache_secondary_valid = 1;
+    }
+    if (!self->decoder->read_row(self->decoder_ctx, row, self->row_pixels, self->has_alpha ? self->row_alpha : NULL))
+    {
+        egui_image_file_close_runtime(self);
+        self->status = EGUI_IMAGE_FILE_STATUS_DECODE_ROW_FAIL;
+        return 0;
+    }
+
+    self->cached_row = row;
+    self->row_cache_valid = 1;
+    self->status = EGUI_IMAGE_FILE_STATUS_READY;
+    return 1;
+}
+
+static void egui_image_file_draw_fallback(egui_canvas_t *canvas, const egui_image_file_t *self, egui_dim_t x, egui_dim_t y, egui_dim_t width, egui_dim_t height,
+                                          int resize)
+{
+    if (self == NULL || self->placeholder == NULL || self->placeholder == (const egui_image_t *)&self->base)
+    {
+        return;
+    }
+
+    if (resize)
+    {
+        egui_image_draw_image_resize(self->placeholder, canvas, x, y, width, height);
+    }
+    else
+    {
+        egui_image_draw_image(self->placeholder, canvas, x, y);
+    }
+}
+
+static int egui_image_file_get_visible_rect(egui_canvas_t *canvas, egui_dim_t x, egui_dim_t y, egui_dim_t width, egui_dim_t height, egui_dim_t *screen_x_start,
+                                            egui_dim_t *screen_y_start, egui_dim_t *screen_x_end, egui_dim_t *screen_y_end)
+{
+    egui_region_t *work = egui_canvas_get_base_view_work_region(canvas);
+    egui_dim_t x_end = x + width;
+    egui_dim_t y_end = y + height;
+
+    if (work == NULL || width <= 0 || height <= 0)
+    {
+        return 0;
+    }
+
+    *screen_x_start = EGUI_MAX(x, work->location.x);
+    *screen_y_start = EGUI_MAX(y, work->location.y);
+    *screen_x_end = EGUI_MIN(x_end, work->location.x + work->size.width);
+    *screen_y_end = EGUI_MIN(y_end, work->location.y + work->size.height);
+    return *screen_x_start < *screen_x_end && *screen_y_start < *screen_y_end;
+}
+
+static int egui_image_file_get_source_point(egui_image_file_t *self, uint16_t src_x, uint16_t src_y, egui_color_t *color, egui_alpha_t *alpha)
+{
+    if (self == NULL || src_x >= self->width || src_y >= self->height)
+    {
+        return 0;
+    }
+    if (!egui_image_file_load_row(self, src_y))
+    {
+        return 0;
+    }
+
+    if (color != NULL)
+    {
+        color->full = EGUI_COLOR_RGB565_TRANS(self->row_pixels[src_x]);
+    }
+    if (alpha != NULL)
+    {
+        *alpha = self->has_alpha ? self->row_alpha[src_x] : EGUI_ALPHA_100;
+    }
+    return 1;
+}
+
+static int egui_image_file_get_rgb565_dst_row(egui_canvas_t *canvas, egui_dim_t screen_x, egui_dim_t screen_y, egui_color_int_t **dst_row,
+                                              egui_dim_t *dst_stride)
+{
+#if EGUI_CONFIG_COLOR_DEPTH == 16
+
+    if (dst_row == NULL || dst_stride == NULL)
+    {
+        return 0;
+    }
+    if (canvas == NULL)
+    {
+        return 0;
+    }
+
+    *dst_stride = canvas->pfb_region.size.width;
+    *dst_row = &canvas->pfb[(screen_y - canvas->pfb_location_in_base_view.y) * (*dst_stride) + (screen_x - canvas->pfb_location_in_base_view.x)];
+    return 1;
+#else
+    EGUI_UNUSED(canvas);
+    EGUI_UNUSED(screen_x);
+    EGUI_UNUSED(screen_y);
+    EGUI_UNUSED(dst_row);
+    EGUI_UNUSED(dst_stride);
+    return 0;
+#endif
+}
+
+static int egui_image_file_draw_visible_row_fast(egui_canvas_t *canvas, const egui_image_file_t *self, egui_dim_t screen_x_start, egui_dim_t screen_y,
+                                                 egui_dim_t dest_width, egui_dim_t src_x_offset)
+{
+#if !EGUI_IMAGE_FILE_FAST_PATH_ENABLE
+    EGUI_UNUSED(canvas);
+    EGUI_UNUSED(self);
+    EGUI_UNUSED(screen_x_start);
+    EGUI_UNUSED(screen_y);
+    EGUI_UNUSED(dest_width);
+    EGUI_UNUSED(src_x_offset);
+    return 0;
+#else
+#if EGUI_CONFIG_COLOR_DEPTH == 16
+    egui_color_int_t *dst_row;
+    egui_dim_t dst_stride;
+    const uint16_t *src_row;
+
+    if (self == NULL || dest_width <= 0 || canvas == NULL || !egui_image_file_get_rgb565_dst_row(canvas, screen_x_start, screen_y, &dst_row, &dst_stride))
+    {
+        return 0;
+    }
+    EGUI_UNUSED(dst_stride);
+
+    src_row = &self->row_pixels[src_x_offset];
+    if (canvas->mask != NULL)
+    {
+        if (!self->has_alpha)
+        {
+            return egui_image_std_blend_rgb565_masked_row(canvas, dst_row, src_row, dest_width, screen_x_start, screen_y, canvas->alpha);
+        }
+
+        egui_image_std_blend_rgb565_alpha8_masked_row(canvas, dst_row, src_row, &self->row_alpha[src_x_offset], dest_width, screen_x_start, screen_y,
+                                                      canvas->alpha);
+        return 1;
+    }
+
+    if (!self->has_alpha)
+    {
+        if (canvas->alpha == 0)
+        {
+            return 1;
+        }
+        if (canvas->alpha == EGUI_ALPHA_100)
+        {
+            egui_api_memcpy(dst_row, src_row, (size_t)dest_width * sizeof(uint16_t));
+            return 1;
+        }
+
+        for (egui_dim_t i = 0; i < dest_width; i++)
+        {
+            egui_image_std_blend_rgb565_src_pixel_fast(&dst_row[i], src_row[i], canvas->alpha);
+        }
+        return 1;
+    }
+
+    egui_image_std_blend_rgb565_alpha8_masked_row(canvas, dst_row, src_row, &self->row_alpha[src_x_offset], dest_width, screen_x_start, screen_y,
+                                                  canvas->alpha);
+    return 1;
+#else
+    EGUI_UNUSED(canvas);
+    EGUI_UNUSED(self);
+    EGUI_UNUSED(screen_x_start);
+    EGUI_UNUSED(screen_y);
+    EGUI_UNUSED(dest_width);
+    EGUI_UNUSED(src_x_offset);
+    return 0;
+#endif
+#endif
+}
+
+static void egui_image_file_draw_visible_row(egui_canvas_t *canvas, const egui_image_file_t *self, egui_dim_t screen_x_start, egui_dim_t screen_y,
+                                             egui_dim_t dest_width, egui_dim_t src_x_offset)
+{
+    egui_mask_t *mask = egui_canvas_get_mask(canvas);
+    egui_dim_t visible_count = dest_width;
+    egui_dim_t i;
+
+    if (egui_image_file_draw_visible_row_fast(canvas, self, screen_x_start, screen_y, dest_width, src_x_offset))
+    {
+        return;
+    }
+
+    if (!self->has_alpha)
+    {
+        if (mask == NULL)
+        {
+            for (i = 0; i < visible_count; i++)
+            {
+                egui_color_t color;
+
+                color.full = EGUI_COLOR_RGB565_TRANS(self->row_pixels[src_x_offset + i]);
+                egui_canvas_draw_point_limit_skip_mask(canvas, screen_x_start + i, screen_y, color, EGUI_ALPHA_100);
+            }
+        }
+        else
+        {
+            for (i = 0; i < visible_count; i++)
+            {
+                egui_color_t color;
+
+                color.full = EGUI_COLOR_RGB565_TRANS(self->row_pixels[src_x_offset + i]);
+                egui_canvas_draw_point_limit(canvas, screen_x_start + i, screen_y, color, EGUI_ALPHA_100);
+            }
+        }
+        return;
+    }
+
+    if (mask == NULL)
+    {
+        for (i = 0; i < visible_count; i++)
+        {
+            egui_dim_t src_x = src_x_offset + i;
+            egui_alpha_t alpha = self->row_alpha[src_x];
+            egui_color_t color;
+
+            if (alpha == 0)
+            {
+                continue;
+            }
+            color.full = EGUI_COLOR_RGB565_TRANS(self->row_pixels[src_x]);
+            egui_canvas_draw_point_limit_skip_mask(canvas, screen_x_start + i, screen_y, color, alpha);
+        }
+    }
+    else
+    {
+        for (i = 0; i < visible_count; i++)
+        {
+            egui_dim_t src_x = src_x_offset + i;
+            egui_alpha_t alpha = self->row_alpha[src_x];
+            egui_color_t color;
+
+            if (alpha == 0)
+            {
+                continue;
+            }
+            color.full = EGUI_COLOR_RGB565_TRANS(self->row_pixels[src_x]);
+            egui_canvas_draw_point_limit(canvas, screen_x_start + i, screen_y, color, alpha);
+        }
+    }
+}
+
+static void egui_image_file_blend_resize_row_nomask(egui_color_int_t *dst_row, const egui_image_file_t *self, egui_dim_t screen_x_start,
+                                                    egui_dim_t screen_x_end, egui_dim_t image_x, egui_dim_t dest_width, egui_alpha_t canvas_alpha)
+{
+    egui_dim_t screen_x = screen_x_start;
+
+    while (screen_x < screen_x_end)
+    {
+        egui_dim_t screen_x_next;
+        egui_dim_t run_width;
+        egui_dim_t dst_offset = screen_x - screen_x_start;
+        uint16_t src_x = egui_image_file_resize_axis_map(self->width, dest_width, screen_x - image_x);
+        egui_alpha_t alpha = self->has_alpha ? self->row_alpha[src_x] : EGUI_ALPHA_100;
+        uint16_t pixel = self->row_pixels[src_x];
+
+        screen_x_next = image_x + egui_image_file_resize_axis_run_end(self->width, dest_width, src_x);
+        if (screen_x_next <= screen_x)
+        {
+            screen_x_next = screen_x + 1;
+        }
+        if (screen_x_next > screen_x_end)
+        {
+            screen_x_next = screen_x_end;
+        }
+        run_width = screen_x_next - screen_x;
+
+        if (alpha != 0)
+        {
+            if (canvas_alpha != EGUI_ALPHA_100)
+            {
+                alpha = egui_color_alpha_mix(canvas_alpha, alpha);
+            }
+
+            if (alpha == EGUI_ALPHA_100)
+            {
+                for (egui_dim_t i = 0; i < run_width; i++)
+                {
+                    dst_row[dst_offset + i] = pixel;
+                }
+            }
+            else if (alpha != 0)
+            {
+                for (egui_dim_t i = 0; i < run_width; i++)
+                {
+                    egui_image_std_blend_rgb565_src_pixel_fast(&dst_row[dst_offset + i], pixel, alpha);
+                }
+            }
+        }
+
+        screen_x = screen_x_next;
+    }
+}
+
+static int egui_image_file_draw_resize_fast_nomask(egui_canvas_t *canvas, const egui_image_file_t *self, egui_dim_t x, egui_dim_t y, egui_dim_t width,
+                                                   egui_dim_t height, egui_dim_t screen_x_start, egui_dim_t screen_y_start, egui_dim_t screen_x_end,
+                                                   egui_dim_t screen_y_end)
+{
+#if !EGUI_IMAGE_FILE_FAST_PATH_ENABLE
+    EGUI_UNUSED(canvas);
+    EGUI_UNUSED(self);
+    EGUI_UNUSED(x);
+    EGUI_UNUSED(y);
+    EGUI_UNUSED(width);
+    EGUI_UNUSED(height);
+    EGUI_UNUSED(screen_x_start);
+    EGUI_UNUSED(screen_y_start);
+    EGUI_UNUSED(screen_x_end);
+    EGUI_UNUSED(screen_y_end);
+    return 0;
+#else
+#if EGUI_CONFIG_COLOR_DEPTH == 16
+    egui_dim_t screen_y = screen_y_start;
+
+    if (self == NULL || canvas == NULL || canvas->mask != NULL || width <= 0 || height <= 0 || self->has_alpha)
+    {
+        return 0;
+    }
+    if (canvas->alpha == 0)
+    {
+        return 1;
+    }
+
+    while (screen_y < screen_y_end)
+    {
+        egui_color_int_t *dst_row;
+        egui_dim_t dst_stride;
+        egui_dim_t screen_y_next;
+        egui_dim_t run_height;
+        uint16_t src_y = egui_image_file_resize_axis_map(self->height, height, screen_y - y);
+
+        if (!egui_image_file_load_row((egui_image_file_t *)self, src_y) ||
+            !egui_image_file_get_rgb565_dst_row(canvas, screen_x_start, screen_y, &dst_row, &dst_stride))
+        {
+            return 0;
+        }
+
+        screen_y_next = y + egui_image_file_resize_axis_run_end(self->height, height, src_y);
+        if (screen_y_next <= screen_y)
+        {
+            screen_y_next = screen_y + 1;
+        }
+        if (screen_y_next > screen_y_end)
+        {
+            screen_y_next = screen_y_end;
+        }
+        run_height = screen_y_next - screen_y;
+
+        egui_image_file_blend_resize_row_nomask(dst_row, self, screen_x_start, screen_x_end, x, width, canvas->alpha);
+
+        if (!self->has_alpha && canvas->alpha == EGUI_ALPHA_100)
+        {
+            egui_dim_t row_bytes = (screen_x_end - screen_x_start) * (egui_dim_t)sizeof(uint16_t);
+
+            for (egui_dim_t row = 1; row < run_height; row++)
+            {
+                egui_api_memcpy(dst_row + row * dst_stride, dst_row, (size_t)row_bytes);
+            }
+        }
+        else
+        {
+            for (egui_dim_t row = 1; row < run_height; row++)
+            {
+                egui_image_file_blend_resize_row_nomask(dst_row + row * dst_stride, self, screen_x_start, screen_x_end, x, width, canvas->alpha);
+            }
+        }
+
+        screen_y = screen_y_next;
+    }
+
+    return 1;
+#else
+    EGUI_UNUSED(canvas);
+    EGUI_UNUSED(self);
+    EGUI_UNUSED(x);
+    EGUI_UNUSED(y);
+    EGUI_UNUSED(width);
+    EGUI_UNUSED(height);
+    EGUI_UNUSED(screen_x_start);
+    EGUI_UNUSED(screen_y_start);
+    EGUI_UNUSED(screen_x_end);
+    EGUI_UNUSED(screen_y_end);
+    return 0;
+#endif
+#endif
+}
+
+static int egui_image_file_api_get_size(const egui_image_t *base, egui_dim_t *width, egui_dim_t *height)
+{
+    egui_image_file_t *self = egui_image_file_from_base(base);
+
+    if (self == NULL)
+    {
+        return 0;
+    }
+    if (egui_image_file_get_intrinsic_resize(self, width, height))
+    {
+        return 1;
+    }
+    if (!egui_image_file_try_open(self, NULL))
+    {
+        return 0;
+    }
+    if (width != NULL)
+    {
+        *width = self->width;
+    }
+    if (height != NULL)
+    {
+        *height = self->height;
+    }
+    return 1;
+}
+
+static int egui_image_file_api_get_point(const egui_image_t *base, egui_dim_t x, egui_dim_t y, egui_color_t *color, egui_alpha_t *alpha)
+{
+    egui_image_file_t *self = egui_image_file_from_base(base);
+    uint16_t src_x;
+    uint16_t src_y;
+    egui_dim_t resize_width;
+    egui_dim_t resize_height;
+
+    if (self == NULL)
+    {
+        return 0;
+    }
+    if (!egui_image_file_try_open(self, NULL))
+    {
+        return 0;
+    }
+    if (egui_image_file_get_intrinsic_resize(self, &resize_width, &resize_height))
+    {
+        if (x < 0 || y < 0 || x >= resize_width || y >= resize_height)
+        {
+            return 0;
+        }
+
+        src_x = egui_image_file_resize_axis_map(self->width, resize_width, x);
+        src_y = egui_image_file_resize_axis_map(self->height, resize_height, y);
+        return egui_image_file_get_source_point(self, src_x, src_y, color, alpha);
+    }
+
+    if (x < 0 || y < 0 || x >= self->width || y >= self->height)
+    {
+        return 0;
+    }
+    return egui_image_file_get_source_point(self, (uint16_t)x, (uint16_t)y, color, alpha);
+}
+
+static int egui_image_file_api_get_point_resize(const egui_image_t *base, egui_dim_t x, egui_dim_t y, egui_dim_t width, egui_dim_t height, egui_color_t *color,
+                                                egui_alpha_t *alpha)
+{
+    egui_image_file_t *self = egui_image_file_from_base(base);
+    egui_dim_t src_x;
+    egui_dim_t src_y;
+    uint32_t scaled_x;
+    uint32_t scaled_y;
+
+    if (self == NULL || width <= 0 || height <= 0 || x < 0 || y < 0 || x >= width || y >= height)
+    {
+        return 0;
+    }
+    if (!egui_image_file_try_open(self, NULL))
+    {
+        return 0;
+    }
+
+    scaled_x = (uint32_t)x * (uint32_t)self->width;
+    scaled_y = (uint32_t)y * (uint32_t)self->height;
+    src_x = (egui_dim_t)(scaled_x / (uint32_t)width);
+    src_y = (egui_dim_t)(scaled_y / (uint32_t)height);
+    if (src_x >= self->width)
+    {
+        src_x = self->width - 1;
+    }
+    if (src_y >= self->height)
+    {
+        src_y = self->height - 1;
+    }
+    return egui_image_file_get_source_point(self, (uint16_t)src_x, (uint16_t)src_y, color, alpha);
+}
+
+static void egui_image_file_api_draw_image(const egui_image_t *base, egui_canvas_t *canvas, egui_dim_t x, egui_dim_t y)
+{
+    egui_image_file_t *self = egui_image_file_from_base(base);
+    egui_dim_t draw_width = 0;
+    egui_dim_t draw_height = 0;
+    egui_dim_t screen_x_start;
+    egui_dim_t screen_y_start;
+    egui_dim_t screen_x_end;
+    egui_dim_t screen_y_end;
+    egui_dim_t screen_y;
+
+    if (self == NULL)
+    {
+        egui_image_file_draw_fallback(canvas, self, x, y, 0, 0, 0);
+        return;
+    }
+    if (egui_image_file_get_intrinsic_resize(self, &draw_width, &draw_height))
+    {
+        egui_image_file_api_draw_image_resize(base, canvas, x, y, draw_width, draw_height);
+        return;
+    }
+    if (!egui_image_file_try_open(self, canvas))
+    {
+        egui_image_file_draw_fallback(canvas, self, x, y, 0, 0, 0);
+        return;
+    }
+    if (!egui_image_file_get_visible_rect(canvas, x, y, self->width, self->height, &screen_x_start, &screen_y_start, &screen_x_end, &screen_y_end))
+    {
+        return;
+    }
+
+    for (screen_y = screen_y_start; screen_y < screen_y_end; screen_y++)
+    {
+        uint16_t src_y = (uint16_t)(screen_y - y);
+        egui_dim_t src_x_offset = screen_x_start - x;
+
+        if (!egui_image_file_load_row(self, src_y))
+        {
+            egui_image_file_draw_fallback(canvas, self, x, y, 0, 0, 0);
+            return;
+        }
+
+        egui_image_file_draw_visible_row(canvas, self, screen_x_start, screen_y, screen_x_end - screen_x_start, src_x_offset);
+    }
+}
+
+static void egui_image_file_api_draw_image_resize(const egui_image_t *base, egui_canvas_t *canvas, egui_dim_t x, egui_dim_t y, egui_dim_t width,
+                                                  egui_dim_t height)
+{
+    egui_image_file_t *self = egui_image_file_from_base(base);
+    egui_dim_t screen_x_start;
+    egui_dim_t screen_y_start;
+    egui_dim_t screen_x_end;
+    egui_dim_t screen_y_end;
+    egui_dim_t screen_y;
+
+    if (self == NULL || !egui_image_file_try_open(self, canvas))
+    {
+        egui_image_file_draw_fallback(canvas, self, x, y, width, height, 1);
+        return;
+    }
+    if (!egui_image_file_get_visible_rect(canvas, x, y, width, height, &screen_x_start, &screen_y_start, &screen_x_end, &screen_y_end))
+    {
+        return;
+    }
+    if (width == self->width && height == self->height)
+    {
+        for (screen_y = screen_y_start; screen_y < screen_y_end; screen_y++)
+        {
+            uint16_t src_y = (uint16_t)(screen_y - y);
+            egui_dim_t src_x_offset = screen_x_start - x;
+
+            if (!egui_image_file_load_row(self, src_y))
+            {
+                egui_image_file_draw_fallback(canvas, self, x, y, width, height, 1);
+                return;
+            }
+
+            egui_image_file_draw_visible_row(canvas, self, screen_x_start, screen_y, screen_x_end - screen_x_start, src_x_offset);
+        }
+        return;
+    }
+    if (egui_image_file_draw_resize_fast_nomask(canvas, self, x, y, width, height, screen_x_start, screen_y_start, screen_x_end, screen_y_end))
+    {
+        return;
+    }
+
+    for (screen_y = screen_y_start; screen_y < screen_y_end;)
+    {
+        egui_dim_t screen_y_next;
+        egui_dim_t run_height;
+        uint16_t src_y = egui_image_file_resize_axis_map(self->height, height, screen_y - y);
+
+        if (!egui_image_file_load_row(self, src_y))
+        {
+            egui_image_file_draw_fallback(canvas, self, x, y, width, height, 1);
+            return;
+        }
+
+        screen_y_next = y + egui_image_file_resize_axis_run_end(self->height, height, src_y);
+        if (screen_y_next <= screen_y)
+        {
+            screen_y_next = screen_y + 1;
+        }
+        if (screen_y_next > screen_y_end)
+        {
+            screen_y_next = screen_y_end;
+        }
+        run_height = screen_y_next - screen_y;
+
+        for (egui_dim_t screen_x = screen_x_start; screen_x < screen_x_end;)
+        {
+            egui_dim_t screen_x_next;
+            egui_dim_t run_width;
+            uint16_t src_x = egui_image_file_resize_axis_map(self->width, width, screen_x - x);
+            egui_alpha_t alpha = EGUI_ALPHA_100;
+            egui_color_t color;
+
+            screen_x_next = x + egui_image_file_resize_axis_run_end(self->width, width, src_x);
+            if (screen_x_next <= screen_x)
+            {
+                screen_x_next = screen_x + 1;
+            }
+            if (screen_x_next > screen_x_end)
+            {
+                screen_x_next = screen_x_end;
+            }
+            run_width = screen_x_next - screen_x;
+
+            if (self->has_alpha)
+            {
+                alpha = self->row_alpha[src_x];
+                if (alpha == 0)
+                {
+                    screen_x = screen_x_next;
+                    continue;
+                }
+            }
+
+            color.full = EGUI_COLOR_RGB565_TRANS(self->row_pixels[src_x]);
+            egui_canvas_draw_fillrect(canvas, screen_x, screen_y, run_width, run_height, color, alpha);
+            screen_x = screen_x_next;
+        }
+
+        screen_y = screen_y_next;
+    }
+}
+
+static const egui_image_api_t egui_image_file_api_table = {
+        .get_size = egui_image_file_api_get_size,
+        .get_point = egui_image_file_api_get_point,
+        .get_point_resize = egui_image_file_api_get_point_resize,
+        .draw_image = egui_image_file_api_draw_image,
+        .draw_image_resize = egui_image_file_api_draw_image_resize,
+};
+
+void egui_image_file_init(egui_image_file_t *self, egui_core_t *core)
+{
+    if (self == NULL)
+    {
+        return;
+    }
+
+    egui_image_init(&self->base, self);
+    self->base.api = &egui_image_file_api_table;
+
+    self->core = core;
+    self->path = NULL;
+    self->io = NULL;
+    self->placeholder = NULL;
+    self->row_pixels = NULL;
+    self->row_alpha = NULL;
+    self->row_pixels_secondary = NULL;
+    self->row_alpha_secondary = NULL;
+    self->row_capacity = 0;
+    self->alpha_capacity = 0;
+    self->row_capacity_secondary = 0;
+    self->alpha_capacity_secondary = 0;
+    self->resize_width = 0;
+    self->resize_height = 0;
+    self->resize_enabled = 0;
+    self->status = EGUI_IMAGE_FILE_STATUS_IDLE;
+    egui_image_file_reset_runtime(self);
+}
+
+void egui_image_file_deinit(egui_image_file_t *self)
+{
+    if (self == NULL)
+    {
+        return;
+    }
+
+    egui_image_file_close_runtime(self);
+    if (self->path != NULL)
+    {
+        egui_free(self->core, self->path);
+        self->path = NULL;
+    }
+    if (self->row_pixels != NULL)
+    {
+        egui_free(self->core, self->row_pixels);
+        self->row_pixels = NULL;
+    }
+    if (self->row_alpha != NULL)
+    {
+        egui_free(self->core, self->row_alpha);
+        self->row_alpha = NULL;
+    }
+    if (self->row_pixels_secondary != NULL)
+    {
+        egui_free(self->core, self->row_pixels_secondary);
+        self->row_pixels_secondary = NULL;
+    }
+    if (self->row_alpha_secondary != NULL)
+    {
+        egui_free(self->core, self->row_alpha_secondary);
+        self->row_alpha_secondary = NULL;
+    }
+    self->row_capacity = 0;
+    self->alpha_capacity = 0;
+    self->row_capacity_secondary = 0;
+    self->alpha_capacity_secondary = 0;
+    self->resize_width = 0;
+    self->resize_height = 0;
+    self->resize_enabled = 0;
+    self->status = EGUI_IMAGE_FILE_STATUS_IDLE;
+}
+
+void egui_image_file_set_default_io(egui_core_t *core, const egui_image_file_io_t *io)
+{
+    if (core == NULL)
+    {
+        return;
+    }
+
+    core->asset.image_file_default_io = io;
+}
+
+int egui_image_file_register_decoder(egui_core_t *core, const egui_image_file_decoder_t *decoder)
+{
+    uint8_t i;
+
+    if (core == NULL || decoder == NULL)
+    {
+        return 0;
+    }
+    for (i = 0; i < core->asset.image_file_decoder_count; i++)
+    {
+        if (core->asset.image_file_decoders[i] == decoder)
+        {
+            return 1;
+        }
+    }
+    if (core->asset.image_file_decoder_count >= EGUI_CONFIG_IMAGE_FILE_DECODER_MAX_COUNT)
+    {
+        return 0;
+    }
+
+    core->asset.image_file_decoders[core->asset.image_file_decoder_count++] = decoder;
+    return 1;
+}
+
+void egui_image_file_clear_decoders(egui_core_t *core)
+{
+    if (core == NULL)
+    {
+        return;
+    }
+
+    core->asset.image_file_decoder_count = 0;
+    egui_api_memset(core->asset.image_file_decoders, 0, sizeof(core->asset.image_file_decoders));
+}
+
+int egui_image_file_set_path(egui_image_file_t *self, const char *path)
+{
+    if (self == NULL)
+    {
+        return 0;
+    }
+    if (self->path != NULL && path != NULL && strcmp(self->path, path) == 0)
+    {
+        return 1;
+    }
+    if (!egui_image_file_alloc_copy_string(self->core, &self->path, path))
+    {
+        self->status = EGUI_IMAGE_FILE_STATUS_OOM;
+        return 0;
+    }
+
+    egui_image_file_close_runtime(self);
+    self->status = (self->path != NULL) ? EGUI_IMAGE_FILE_STATUS_IDLE : EGUI_IMAGE_FILE_STATUS_NO_PATH;
+    return 1;
+}
+
+void egui_image_file_set_io(egui_image_file_t *self, const egui_image_file_io_t *io)
+{
+    if (self == NULL || self->io == io)
+    {
+        return;
+    }
+
+    egui_image_file_close_runtime(self);
+    self->io = io;
+    self->status = EGUI_IMAGE_FILE_STATUS_IDLE;
+}
+
+void egui_image_file_set_placeholder(egui_image_file_t *self, const egui_image_t *placeholder)
+{
+    if (self == NULL)
+    {
+        return;
+    }
+
+    self->placeholder = placeholder;
+}
+
+void egui_image_file_set_resize(egui_image_file_t *self, egui_dim_t width, egui_dim_t height)
+{
+    if (self == NULL)
+    {
+        return;
+    }
+    if (width <= 0 || height <= 0)
+    {
+        egui_image_file_clear_resize(self);
+        return;
+    }
+    if (self->resize_enabled != 0U && self->resize_width == (uint16_t)width && self->resize_height == (uint16_t)height)
+    {
+        return;
+    }
+
+    self->resize_width = (uint16_t)width;
+    self->resize_height = (uint16_t)height;
+    self->resize_enabled = 1U;
+}
+
+void egui_image_file_clear_resize(egui_image_file_t *self)
+{
+    if (self == NULL)
+    {
+        return;
+    }
+
+    self->resize_width = 0;
+    self->resize_height = 0;
+    self->resize_enabled = 0;
+}
+
+int egui_image_file_get_resize(const egui_image_file_t *self, egui_dim_t *width, egui_dim_t *height)
+{
+    return egui_image_file_get_intrinsic_resize(self, width, height);
+}
+
+int egui_image_file_reload(egui_image_file_t *self)
+{
+    if (self == NULL)
+    {
+        return 0;
+    }
+
+    egui_image_file_close_runtime(self);
+    self->status = EGUI_IMAGE_FILE_STATUS_IDLE;
+    return egui_image_file_try_open(self, NULL);
+}
+
+egui_image_file_status_t egui_image_file_get_status(const egui_image_file_t *self)
+{
+    if (self == NULL)
+    {
+        return EGUI_IMAGE_FILE_STATUS_IDLE;
+    }
+
+    return (egui_image_file_status_t)self->status;
+}
+
+const char *egui_image_file_get_decoder_name(const egui_image_file_t *self)
+{
+    if (self == NULL || self->decoder == NULL || self->decoder->name == NULL || self->decoder->name[0] == '\0')
+    {
+        return NULL;
+    }
+
+    return self->decoder->name;
+}
+
+const char *egui_image_file_status_to_string(egui_image_file_status_t status)
+{
+    switch (status)
+    {
+    case EGUI_IMAGE_FILE_STATUS_READY:
+        return "ready";
+    case EGUI_IMAGE_FILE_STATUS_NO_PATH:
+        return "no_path";
+    case EGUI_IMAGE_FILE_STATUS_NO_IO:
+        return "no_io";
+    case EGUI_IMAGE_FILE_STATUS_NO_DECODER:
+        return "no_decoder";
+    case EGUI_IMAGE_FILE_STATUS_OPEN_FILE_FAIL:
+        return "open_file_fail";
+    case EGUI_IMAGE_FILE_STATUS_OPEN_DECODER_FAIL:
+        return "open_decoder_fail";
+    case EGUI_IMAGE_FILE_STATUS_DECODE_ROW_FAIL:
+        return "decode_row_fail";
+    case EGUI_IMAGE_FILE_STATUS_OOM:
+        return "oom";
+    case EGUI_IMAGE_FILE_STATUS_IDLE:
+    default:
+        return "idle";
+    }
+}
+
+#endif /* EGUI_CONFIG_FUNCTION_IMAGE_FILE */

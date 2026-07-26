@@ -3,18 +3,56 @@
 #include <cstdio>
 #include <cstring>
 
-#include "bsp/bsp_display.h"
-
-void gui_draw_text(int16_t x, int16_t y, const char *text, bool inverted) {
-    U8G2_FOR_ST73XX &font = bsp_fonts();
-    font.setForegroundColor(inverted ? ST7305_COLOR_WHITE : ST7305_COLOR_BLACK);
-    font.drawUTF8(x, y, text == nullptr ? "" : text);
-    font.setForegroundColor(ST7305_COLOR_BLACK);
+namespace {
+void gui_view_on_draw(egui_view_t *self) {
+    GuiEguiView *view = reinterpret_cast<GuiEguiView *>(self);
+    egui_canvas_t *canvas = egui_view_get_canvas(self);
+    if ((canvas != nullptr) && (view->draw != nullptr)) {
+        view->draw(canvas);
+    }
 }
 
-void gui_draw_header(const char *title) {
-    bsp_display().drawFastHLine(0, 21, 384, ST7305_COLOR_BLACK);
-    gui_draw_text(8, 16, title);
+const egui_view_api_t gui_view_api = {
+    .dispatch_touch_event = egui_view_dispatch_touch_event,
+    .on_touch_event = egui_view_on_touch_event,
+    .on_intercept_touch_event = egui_view_on_intercept_touch_event,
+    .compute_scroll = egui_view_compute_scroll,
+    .calculate_layout = egui_view_calculate_layout,
+    .request_layout = egui_view_request_layout,
+    .draw = egui_view_draw,
+    .on_attach_to_window = egui_view_on_attach_to_window,
+    .on_draw = gui_view_on_draw,
+    .on_detach_from_window = egui_view_on_detach_from_window,
+};
+}
+
+void gui_egui_view_init(GuiEguiView *view, egui_core_t *core,
+                        void (*draw)(egui_canvas_t *canvas)) {
+    egui_view_init(EGUI_VIEW_OF(view), core);
+    view->base.api = &gui_view_api;
+    view->draw = draw;
+    egui_view_set_size(EGUI_VIEW_OF(view), EGUI_CONFIG_SCREEN_WIDTH,
+                       EGUI_CONFIG_SCREEN_HEIGHT);
+}
+
+void gui_draw_text(egui_canvas_t *canvas, int16_t x, int16_t y,
+                   const char *text, bool inverted) {
+    egui_canvas_draw_text(canvas, (const egui_font_t *)EGUI_CONFIG_FONT_DEFAULT,
+                          text == nullptr ? "" : text, x, y,
+                          inverted ? EGUI_COLOR_WHITE : EGUI_COLOR_BLACK,
+                          EGUI_ALPHA_100);
+}
+
+void gui_draw_page_background(egui_canvas_t *canvas) {
+    egui_canvas_draw_rectangle_fill(canvas, 0, 0, EGUI_CONFIG_SCREEN_WIDTH,
+                                    EGUI_CONFIG_SCREEN_HEIGHT,
+                                    EGUI_COLOR_WHITE, EGUI_ALPHA_100);
+}
+
+void gui_draw_header(egui_canvas_t *canvas, const char *title) {
+    gui_draw_text(canvas, 8, 4, title);
+    egui_canvas_draw_line(canvas, 0, 21, EGUI_CONFIG_SCREEN_WIDTH - 1, 21, 1,
+                          EGUI_COLOR_BLACK, EGUI_ALPHA_100);
 }
 
 void gui_copy_utf8_fitted(const char *source, char *destination,
@@ -27,50 +65,18 @@ void gui_copy_utf8_fitted(const char *source, char *destination,
         return;
     }
 
-    size_t source_pos = 0;
+    const size_t max_chars = static_cast<size_t>(width > 0 ? width / 8 : 0);
     size_t output_pos = 0;
-    while ((source[source_pos] != '\0') && (output_pos + 4 < capacity)) {
-        const unsigned char first = static_cast<unsigned char>(source[source_pos]);
-        size_t glyph_bytes = 1;
-        if ((first & 0xE0) == 0xC0) glyph_bytes = 2;
-        else if ((first & 0xF0) == 0xE0) glyph_bytes = 3;
-        else if ((first & 0xF8) == 0xF0) glyph_bytes = 4;
-
-        bool complete = true;
-        uint16_t codepoint = first;
-        for (size_t index = 1; index < glyph_bytes; ++index) {
-            const unsigned char next = static_cast<unsigned char>(source[source_pos + index]);
-            if ((next == 0) || ((next & 0xC0) != 0x80)) {
-                complete = false;
-            }
-        }
-        if (complete && (glyph_bytes > 1)) {
-            if (glyph_bytes == 2) codepoint &= 0x1F;
-            else if (glyph_bytes == 3) codepoint &= 0x0F;
-            else codepoint &= 0x07;
-            for (size_t index = 1; index < glyph_bytes; ++index) {
-                codepoint = static_cast<uint16_t>((codepoint << 6) |
-                    (static_cast<unsigned char>(source[source_pos + index]) & 0x3F));
-            }
-        }
-
-        const bool supported = complete && (glyph_bytes <= 3) &&
-                               u8g2_IsGlyph(&bsp_fonts().u8g2, codepoint);
-        if (supported) {
-            std::memcpy(destination + output_pos, source + source_pos, glyph_bytes);
-            output_pos += glyph_bytes;
-            source_pos += glyph_bytes;
-        } else {
-            destination[output_pos++] = '?';
-            source_pos += complete ? glyph_bytes : 1;
-        }
-        destination[output_pos] = '\0';
-        if (bsp_fonts().getUTF8Width(destination) > width) {
-            output_pos -= supported ? glyph_bytes : 1;
-            destination[output_pos] = '\0';
-            break;
-        }
+    for (size_t source_pos = 0;
+         (source[source_pos] != '\0') && (output_pos + 1 < capacity) &&
+         (output_pos < max_chars);
+         ++source_pos) {
+        const unsigned char value = static_cast<unsigned char>(source[source_pos]);
+        destination[output_pos++] = (value >= 0x20U && value <= 0x7EU)
+                                        ? static_cast<char>(value)
+                                        : '?';
     }
+    destination[output_pos] = '\0';
 }
 
 void gui_format_time(uint32_t seconds, char *buffer, size_t capacity) {

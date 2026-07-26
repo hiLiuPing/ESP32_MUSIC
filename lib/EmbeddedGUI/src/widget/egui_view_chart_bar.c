@@ -1,0 +1,286 @@
+#include <stdio.h>
+#include <assert.h>
+#include <string.h>
+
+#include "egui_view_chart_bar.h"
+#include "core/egui_core.h"
+#include "canvas/egui_canvas_gradient.h"
+#include "font/egui_font_std.h"
+#include "resource/egui_resource.h"
+
+/**
+ * @file egui_view_chart_bar.c
+ * @brief Axis-based bar chart widget that renders grouped vertical columns.
+ *
+ * This module plugs bar-specific data
+ * drawing into the shared chart-axis base.
+ * It computes per-group geometry, clips work to visible bar groups, and uses
+ * the axis-base helpers for axes,
+ * legend, and zoom handling.
+ */
+
+// ============== Bar Drawing (virtual) ==============
+
+/** Map one Y-axis value into a plot-space pixel using the active viewport. */
+__EGUI_STATIC_INLINE__ egui_dim_t egui_view_chart_bar_map_y_fast(int16_t data_y, egui_dim_t plot_y, int32_t plot_h_span, int16_t view_y_min, int32_t range_y)
+{
+    if (range_y <= 0 || plot_h_span <= 0)
+    {
+        return plot_y;
+    }
+
+    return plot_y + plot_h_span - (egui_dim_t)(((int32_t)data_y - (int32_t)view_y_min) * plot_h_span / range_y);
+}
+
+/**
+ * @brief Draw grouped bars for every visible series inside the shared plot clip.
+ *
+ * Bars are grouped by point index. Each group can contain one bar per
+ * series,
+ * separated by the configured gap. The active clip is used to skip fully hidden
+ * groups before any per-bar mapping work is done.
+ */
+static void egui_view_chart_bar_draw_data(egui_view_t *self, const egui_region_t *plot_area)
+{
+    egui_canvas_t *canvas = egui_view_get_canvas(self);
+    EGUI_LOCAL_INIT(egui_view_chart_bar_t);
+    egui_chart_axis_base_t *ab = &local->axis_base.ab;
+    egui_region_t *work = egui_canvas_get_base_view_work_region(canvas);
+    egui_dim_t work_x1;
+    egui_dim_t work_y1;
+    egui_dim_t work_x2;
+    egui_dim_t work_y2;
+    egui_dim_t plot_y;
+    int32_t plot_h_span;
+    int16_t view_y_min;
+    int16_t view_y_max;
+    int32_t range_y;
+    uint8_t point_start = 0;
+    uint8_t point_end;
+
+    if (ab->series_count == 0 || ab->series[0].point_count == 0)
+    {
+        return;
+    }
+    if (work == NULL || egui_region_is_empty(work))
+    {
+        return;
+    }
+
+    work_x1 = work->location.x;
+    work_y1 = work->location.y;
+    work_x2 = work->location.x + work->size.width;
+    work_y2 = work->location.y + work->size.height;
+
+    uint8_t n_points = ab->series[0].point_count;
+    uint8_t n_series = ab->series_count;
+    point_end = n_points;
+
+    // Clamp the requested gap so one group can still fit all series bars.
+    egui_dim_t group_width = plot_area->size.width / n_points;
+    egui_dim_t max_gap = (group_width > (n_series + 1)) ? (group_width / (n_series + 1) - 1) : 0;
+    uint8_t effective_gap = local->bar_gap;
+    if (effective_gap > (uint8_t)max_gap)
+    {
+        effective_gap = (uint8_t)max_gap;
+    }
+    egui_dim_t total_gap = (egui_dim_t)effective_gap * (n_series + 1);
+    egui_dim_t bar_width = (group_width - total_gap) / n_series;
+    if (bar_width < 1)
+    {
+        bar_width = 1;
+    }
+
+    plot_y = plot_area->location.y;
+    plot_h_span = (int32_t)plot_area->size.height - 1;
+    egui_chart_get_view_y(ab, &view_y_min, &view_y_max);
+    range_y = (int32_t)view_y_max - (int32_t)view_y_min;
+
+    // Use the zero line as the shared baseline so positive and negative bars grow away from it.
+    egui_dim_t baseline_y = egui_view_chart_bar_map_y_fast(0, plot_y, plot_h_span, view_y_min, range_y);
+    if (baseline_y < plot_y)
+    {
+        baseline_y = plot_y;
+    }
+    if (baseline_y > plot_y + plot_area->size.height)
+    {
+        baseline_y = plot_y + plot_area->size.height;
+    }
+
+    if (group_width > 0)
+    {
+        // Convert the current clip into a coarse point-index range to skip hidden groups quickly.
+        int32_t rel_work_x1 = (int32_t)work_x1 - (int32_t)plot_area->location.x;
+        int32_t rel_work_x2 = (int32_t)work_x2 - (int32_t)plot_area->location.x;
+
+        if (rel_work_x2 <= 0 || rel_work_x1 >= plot_area->size.width)
+        {
+            return;
+        }
+
+        if (rel_work_x1 > 0)
+        {
+            uint32_t start_index = (uint32_t)rel_work_x1 / (uint32_t)group_width;
+            point_start = (start_index < n_points) ? (uint8_t)start_index : n_points;
+        }
+        if (rel_work_x2 < plot_area->size.width)
+        {
+            uint32_t end_index = ((uint32_t)rel_work_x2 + (uint32_t)group_width - 1U) / (uint32_t)group_width;
+            point_end = (end_index < n_points) ? (uint8_t)end_index : n_points;
+        }
+        if (point_start >= point_end)
+        {
+            return;
+        }
+    }
+
+    for (uint8_t s = 0; s < n_series; s++)
+    {
+        const egui_chart_series_t *series = &ab->series[s];
+        egui_dim_t bar_x_offset = effective_gap + s * (bar_width + effective_gap);
+        egui_dim_t group_x = plot_area->location.x + group_width * point_start;
+
+        if (point_start >= series->point_count)
+        {
+            continue;
+        }
+#if EGUI_CONFIG_FUNCTION_WIDGET_ENHANCED_DRAW
+        // Enhanced draw builds add a simple top-to-bottom highlight to each bar.
+        egui_color_t color_light = egui_rgb_mix(series->color, EGUI_COLOR_WHITE, 80);
+        egui_gradient_stop_t stops[2] = {
+                {.position = 0, .color = color_light},
+                {.position = 255, .color = series->color},
+        };
+        egui_gradient_t grad = {
+                .type = EGUI_GRADIENT_TYPE_LINEAR_VERTICAL,
+                .stop_count = 2,
+                .alpha = EGUI_ALPHA_100,
+                .stops = stops,
+        };
+#endif
+        for (uint8_t i = point_start; i < point_end; i++, group_x += group_width)
+        {
+            egui_dim_t bar_x;
+            egui_dim_t val_y;
+            egui_dim_t bar_top;
+            egui_dim_t bar_h;
+
+            if (group_x >= work_x2)
+            {
+                break;
+            }
+            if (group_x + group_width <= work_x1 || i >= series->point_count)
+            {
+                continue;
+            }
+
+            bar_x = group_x + bar_x_offset;
+            val_y = egui_view_chart_bar_map_y_fast(series->points[i].y, plot_y, plot_h_span, view_y_min, range_y);
+            if (val_y < baseline_y)
+            {
+                bar_top = val_y;
+                bar_h = baseline_y - val_y;
+            }
+            else
+            {
+                bar_top = baseline_y;
+                bar_h = val_y - baseline_y;
+            }
+            // Zero-height values stay invisible instead of forcing a fake 1px bar.
+            if (bar_h < 1)
+            {
+                continue;
+            }
+            if (bar_x >= work_x2 || bar_x + bar_width <= work_x1 || bar_top >= work_y2 || bar_top + bar_h <= work_y1)
+            {
+                continue;
+            }
+
+#if EGUI_CONFIG_FUNCTION_WIDGET_ENHANCED_DRAW
+            egui_canvas_draw_rectangle_fill_gradient(canvas, bar_x, bar_top, bar_width, bar_h, &grad);
+#else
+            egui_canvas_draw_rectangle_fill(canvas, bar_x, bar_top, bar_width, bar_h, series->color, EGUI_ALPHA_100);
+#endif
+        }
+    }
+}
+
+// ============== API Table ==============
+
+/** API table that reuses the axis-base lifecycle and swaps in bar data drawing. */
+const egui_view_chart_axis_api_t EGUI_VIEW_API_TABLE_NAME(egui_view_chart_bar_t) = {
+        .base =
+                {
+                        .dispatch_touch_event = egui_view_dispatch_touch_event,
+#if EGUI_CONFIG_FUNCTION_SUPPORT_MULTI_TOUCH
+                        .on_touch_event = egui_view_chart_axis_on_touch_event,
+#else
+                        .on_touch_event = egui_view_on_touch_event,
+#endif
+                        .on_intercept_touch_event = egui_view_on_intercept_touch_event,
+                        .compute_scroll = egui_view_compute_scroll,
+                        .calculate_layout = egui_view_calculate_layout,
+                        .request_layout = egui_view_request_layout,
+                        .draw = egui_view_draw,
+                        .on_attach_to_window = egui_view_on_attach_to_window,
+                        .on_draw = egui_view_chart_axis_on_draw,
+                        .on_detach_from_window = egui_view_on_detach_from_window,
+#if EGUI_CONFIG_FUNCTION_SUPPORT_KEY
+                        .dispatch_key_event = egui_view_dispatch_key_event,
+                        .on_key_event = egui_view_on_key_event,
+#endif
+                },
+        .draw_data = egui_view_chart_bar_draw_data,
+};
+
+// ============== Init / Params ==============
+
+/** Initialize a grouped bar chart with stock spacing and categorical X-axis mode. */
+void egui_view_chart_bar_init(egui_view_t *self, egui_core_t *core)
+{
+    EGUI_INIT_LOCAL(egui_view_chart_bar_t);
+    egui_view_chart_axis_init(self, core);
+    self->api = (const egui_view_api_t *)&EGUI_VIEW_API_TABLE_NAME(egui_view_chart_bar_t);
+
+    // Grouped bars default to a small inner gap and categorical tick placement.
+    local->bar_gap = 2;
+    local->axis_base.clip_margin = local->bar_gap + 2;
+    egui_chart_axis_base_set_axis_x_categorical(&local->axis_base.ab, 1);
+
+    egui_view_set_view_name(self, "egui_view_chart_bar");
+}
+
+/** Apply only the view rectangle from one bar-chart parameter block. */
+void egui_view_chart_bar_apply_params(egui_view_t *self, const egui_view_chart_bar_params_t *params)
+{
+    egui_view_set_position(self, params->region.location.x, params->region.location.y);
+    egui_view_set_size(self, params->region.size.width, params->region.size.height);
+}
+
+/** Convenience helper that initializes the widget before applying its geometry. */
+void egui_view_chart_bar_init_with_params(egui_view_t *self, egui_core_t *core, const egui_view_chart_bar_params_t *params)
+{
+    egui_view_chart_bar_init(self, core);
+    egui_view_chart_bar_apply_params(self, params);
+}
+
+// ============== Setters ==============
+
+/** Update the inter-bar gap and keep the clip expansion in sync with the new spacing. */
+void egui_view_chart_bar_set_bar_gap(egui_view_t *self, uint8_t gap)
+{
+    EGUI_LOCAL_INIT(egui_view_chart_bar_t);
+    local->bar_gap = gap;
+    local->axis_base.clip_margin = gap + 2;
+    egui_view_invalidate(self);
+}
+
+uint8_t egui_view_chart_bar_get_bar_gap(egui_view_t *self)
+{
+    if (self == NULL)
+    {
+        return 0;
+    }
+    EGUI_LOCAL_INIT(egui_view_chart_bar_t);
+    return local->bar_gap;
+}

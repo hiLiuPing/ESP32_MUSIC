@@ -21,6 +21,9 @@ public:
 
     void clearDisplay();
 
+    void blitRgb565(int16_t x, int16_t y, int16_t width, int16_t height,
+                    const uint16_t *pixels);
+
     void writePoint(uint x, uint y, bool enabled) override;
     void writePoint(uint x, uint y, uint16_t data) override;
 
@@ -54,6 +57,7 @@ private:
     void address();
     void Write_Register(uint8_t idat);
     void Write_Parameter(uint8_t ddat);
+    void writePackedPoint(uint16_t x, uint16_t y, bool enabled);
 };
 
 #endif

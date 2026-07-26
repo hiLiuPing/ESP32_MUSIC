@@ -55,6 +55,59 @@ void ST7305_2p9_BW_DisplayDriver::clearDisplay() {
     memset(display_buffer, 0x00, DISPLAY_BUFFER_LENGTH);
 }
 
+void ST7305_2p9_BW_DisplayDriver::writePackedPoint(uint16_t x, uint16_t y,
+                                                   bool enabled) {
+    const uint16_t byte_index = (y / 2U) * LCD_DATA_WIDTH + (x / 4U);
+    const uint8_t bit = 7U - static_cast<uint8_t>((x % 4U) * 2U + (y % 2U));
+    if (enabled) {
+        display_buffer[byte_index] |= static_cast<uint8_t>(1U << bit);
+    } else {
+        display_buffer[byte_index] &= static_cast<uint8_t>(~(1U << bit));
+    }
+}
+
+void ST7305_2p9_BW_DisplayDriver::blitRgb565(int16_t x, int16_t y,
+                                             int16_t width, int16_t height,
+                                             const uint16_t *pixels) {
+    static constexpr uint8_t bayer4x4[16] = {
+        0, 8, 2, 10,
+        12, 4, 14, 6,
+        3, 11, 1, 9,
+        15, 7, 13, 5,
+    };
+    if ((pixels == nullptr) || (width <= 0) || (height <= 0)) {
+        return;
+    }
+
+    for (int16_t row = 0; row < height; ++row) {
+        const int16_t logical_y = y + row;
+        if ((logical_y < 0) || (logical_y >= 168)) {
+            continue;
+        }
+        for (int16_t column = 0; column < width; ++column) {
+            const int16_t logical_x = x + column;
+            if ((logical_x < 0) || (logical_x >= 384)) {
+                continue;
+            }
+
+            const uint16_t color = pixels[row * width + column];
+            const uint8_t red = static_cast<uint8_t>(((color >> 11) & 0x1FU) * 255U / 31U);
+            const uint8_t green = static_cast<uint8_t>(((color >> 5) & 0x3FU) * 255U / 63U);
+            const uint8_t blue = static_cast<uint8_t>((color & 0x1FU) * 255U / 31U);
+            const uint8_t luminance = static_cast<uint8_t>(
+                (static_cast<uint16_t>(red) * 54U +
+                 static_cast<uint16_t>(green) * 183U +
+                 static_cast<uint16_t>(blue) * 19U) >> 8U);
+            const uint8_t threshold = static_cast<uint8_t>(
+                bayer4x4[((logical_y & 3) << 2) | (logical_x & 3)] * 16U + 8U);
+
+            const uint16_t physical_x = static_cast<uint16_t>(167 - logical_y);
+            const uint16_t physical_y = static_cast<uint16_t>(logical_x);
+            writePackedPoint(physical_x, physical_y, luminance < threshold);
+        }
+    }
+}
+
 void ST7305_2p9_BW_DisplayDriver::writePoint(uint x, uint y, bool enabled) {
     if(x>=LCD_WIDTH || y>=LCD_HIGH){
         return;
