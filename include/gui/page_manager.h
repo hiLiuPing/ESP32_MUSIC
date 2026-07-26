@@ -1,13 +1,17 @@
 #pragma once
 
-#include "app/player_types.h"
+#include "gui/page.h"
 
 void gui_page_manager_init();
+bool gui_page_manager_register(GuiPageDescriptor *page);
+bool gui_page_manager_load(UiPage page);
 UiPage gui_page_current();
 void gui_page_goto(UiPage page);
 void gui_page_previous();
 void gui_page_next();
-void gui_page_handle_input(const UiInputEvent &event);
+void gui_page_back();
+void gui_page_handle_key(const KeyEvent &event);
 void gui_page_update_status(const PlayerStatus &status);
+void gui_page_service();
 void gui_page_render(bool force = false);
 const char *gui_page_name(UiPage page);

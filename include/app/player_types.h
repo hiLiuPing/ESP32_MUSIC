@@ -59,35 +59,3 @@ struct PlayerStatus {
     uint8_t volume;
     char file_name[PLAYER_NAME_LENGTH];
 };
-
-enum class UiPage : uint8_t {
-    Boot,
-    Home,
-    Music,
-    Read,
-    Setting,
-};
-
-enum class UiInputType : uint8_t {
-    PageGoto,
-    PagePrevious,
-    PageNext,
-    Up,
-    Down,
-    Ok,
-    Play,
-    Pause,
-    Toggle,
-    TrackPrevious,
-    TrackNext,
-    VolumeSet,
-    VolumeChange,
-    Rescan,
-    Status,
-};
-
-struct UiInputEvent {
-    UiInputType type;
-    int16_t value;
-    UiPage page;
-};

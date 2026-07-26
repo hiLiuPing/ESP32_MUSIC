@@ -5,6 +5,7 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 
+#include "app/key_types.h"
 #include "app/player_types.h"
 
 constexpr EventBits_t HW_EVENT_DISPLAY_READY = BIT0;
@@ -13,12 +14,14 @@ constexpr EventBits_t HW_EVENT_CODEC_READY = BIT2;
 constexpr EventBits_t HW_EVENT_LIBRARY_READY = BIT3;
 constexpr EventBits_t HW_EVENT_INIT_DONE = BIT4;
 
-extern QueueHandle_t UiInputQueue;
+extern QueueHandle_t KeyEventQueue;
+extern QueueHandle_t GuiKeyQueue;
 extern QueueHandle_t PlayerCommandQueue;
 extern QueueHandle_t PlayerStatusQueue;
 extern SemaphoreHandle_t GuiWakeSemaphore;
 extern SemaphoreHandle_t MusicLibraryMutex;
 extern SemaphoreHandle_t PlayerStatusMutex;
+extern SemaphoreHandle_t AppDataMutex;
 extern EventGroupHandle_t HardwareEventGroup;
 
 void task_system_init();

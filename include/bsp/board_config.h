@@ -27,4 +27,8 @@ constexpr uint8_t AudioPower = 18;
 constexpr uint8_t AudioEnable = 21;
 constexpr uint8_t HeadphoneDetect = 47;
 constexpr uint8_t StatusLed = 48;
+
+constexpr uint8_t KeyLeft = 8;
+constexpr uint8_t Keyright = 2;
+constexpr uint8_t KeyMidle = 7;
 }
