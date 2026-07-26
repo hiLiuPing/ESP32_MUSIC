@@ -6,18 +6,19 @@ WM8978 codec. The firmware is split into four layers:
 - `src/bsp`: pins and hardware drivers for display, SD, codec and input.
 - `src/app`: command parser, MP3 library and shared player state.
 - `src/task`: FreeRTOS object creation and hardware/input/player/GUI tasks.
-- `src/gui`: boot, home, music, read and setting pages.
+- `src/gui`: boot, home, music, read, weather, poetry and setting pages.
 
 The player does not connect to Wi-Fi and does not start playback at boot. It
 recursively indexes up to 128 MP3 files from the SD card and waits on the first
-track. The read and setting pages are intentional placeholders.
+track. Weather data is currently populated with local seven-day demonstration
+values; poetry and Heiti font resources are read from LittleFS at runtime.
 
 ## Serial control
 
 Use `115200 8N1` and terminate every command with CR or LF.
 
 ```text
-page home|music|read|setting
+page home|music|read|weather|poetry|setting
 page-prev
 page-next
 up

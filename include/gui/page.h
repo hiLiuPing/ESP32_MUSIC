@@ -12,6 +12,8 @@ enum class UiPage : uint8_t {
     Music,
     Read,
     Setting,
+    Weather,
+    Poetry,
 };
 
 struct GuiPageDescriptor {

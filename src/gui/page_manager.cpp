@@ -4,9 +4,10 @@
 #include <cstring>
 
 #include "gui/egui_port.h"
+#include "gui/ui_popups.h"
 
 namespace {
-constexpr size_t MAX_PAGES = 5;
+constexpr size_t MAX_PAGES = 7;
 constexpr size_t HISTORY_DEPTH = 8;
 
 GuiPageDescriptor *registered_pages[MAX_PAGES] = {};
@@ -66,6 +67,8 @@ bool switch_page(GuiPageDescriptor *target, bool record_history) {
     if ((target == nullptr) || (target == current_page)) {
         return false;
     }
+    ui_poetry_popup_dismiss();
+    ui_system_popup_dismiss_immediate();
 
     ensure_initialized(target);
     if (record_history && (current_page != nullptr) && (current_page->id != UiPage::Boot)) {
@@ -203,13 +206,20 @@ void gui_page_handle_key(const KeyEvent &event) {
         return;
     }
 
-    if ((event.id == KeyId::Right) && (event.gesture == KeyGesture::LongPress)) {
-        gui_page_back();
+    if (ui_poetry_popup_is_visible() || ui_system_popup_is_visible()) {
+        ui_poetry_popup_dismiss();
+        ui_system_popup_dismiss_immediate();
+        dirty = true;
         return;
     }
 
     if ((current_page->key_consume != nullptr) && current_page->key_consume(event)) {
         dirty = true;
+        return;
+    }
+
+    if ((event.id == KeyId::Right) && (event.gesture == KeyGesture::LongPress)) {
+        gui_page_back();
         return;
     }
 
@@ -236,6 +246,7 @@ void gui_page_update_status(const PlayerStatus &status) {
 }
 
 void gui_page_service() {
+    ui_popups_service(gui_page_current() == UiPage::Home);
     if ((current_page != nullptr) && (current_page->service != nullptr) &&
         current_page->service()) {
         dirty = true;

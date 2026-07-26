@@ -49,6 +49,7 @@ void task_system_init() {
     PlayerStatusMutex = xSemaphoreCreateMutex();
     AppDataMutex = xSemaphoreCreateMutex();
     HardwareEventGroup = xEventGroupCreate();
+    system_notify_init();
 
     require_handle(KeyEventQueue, "KeyEventQueue");
     require_handle(GuiKeyQueue, "GuiKeyQueue");
@@ -90,6 +91,9 @@ bool task_post_player_command(PlayerCommandType type, int16_t value) {
 
 void task_publish_player_status(const PlayerStatus &status) {
     player_app_set_status(status);
+    if (status.error != PlayerError::None) {
+        system_notify_post(SystemNotifyType::Player, player_error_name(status.error));
+    }
     if (PlayerStatusQueue != nullptr) {
         xQueueOverwrite(PlayerStatusQueue, &status);
     }

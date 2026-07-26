@@ -3,7 +3,9 @@
 #include "bsp/bsp_audio.h"
 #include "bsp/bsp_display.h"
 #include "bsp/bsp_storage.h"
+#include "bsp/bsp_littlefs.h"
 #include "task/task_system.h"
+#include "app/system_notify.h"
 
 void hardware_init_task(void *parameter) {
     (void)parameter;
@@ -19,6 +21,14 @@ void hardware_init_task(void *parameter) {
         xEventGroupSetBits(HardwareEventGroup, HW_EVENT_SD_READY);
     } else {
         Serial.println("[HW] SD unavailable");
+        system_notify_post(SystemNotifyType::Storage, "SD CARD UNAVAILABLE");
+    }
+
+    Serial.println("[HW] LittleFS init");
+    if (bsp_littlefs_init()) {
+        Serial.println("[HW] LittleFS ready");
+    } else {
+        Serial.println("[HW] LittleFS unavailable");
     }
 
     Serial.println("[HW] WM8978 init");
@@ -27,6 +37,7 @@ void hardware_init_task(void *parameter) {
         xEventGroupSetBits(HardwareEventGroup, HW_EVENT_CODEC_READY);
     } else {
         Serial.println("[HW] WM8978 unavailable");
+        system_notify_post(SystemNotifyType::Audio, "AUDIO CODEC UNAVAILABLE");
     }
 
     xEventGroupSetBits(HardwareEventGroup, HW_EVENT_INIT_DONE);

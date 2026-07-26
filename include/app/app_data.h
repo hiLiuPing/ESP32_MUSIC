@@ -44,6 +44,21 @@ struct HomeWeatherData {
     bool stale;
 };
 
+struct WeatherForecastDay {
+    uint32_t version;
+    uint16_t year;
+    uint8_t month;
+    uint8_t day;
+    int16_t high_c;
+    int16_t low_c;
+    uint16_t icon_id;
+    WeatherScene_t scene;
+    bool valid;
+    bool stale;
+};
+
+constexpr uint8_t APP_WEATHER_FORECAST_DAYS = 7U;
+
 struct HomeEnvironmentData {
     uint32_t version;
     int16_t temperature_x10;
@@ -68,6 +83,8 @@ struct AppDataSnapshot {
 
     AppTime time;
     HomeWeatherData weather;
+    WeatherForecastDay forecast[APP_WEATHER_FORECAST_DAYS];
+    uint32_t forecast_version;
     HomeEnvironmentData environment;
     HomeBatteryData battery;
 
@@ -104,6 +121,10 @@ bool app_data_get_snapshot(AppDataSnapshot *snapshot);
 
 void app_data_set_time(const AppTime &time);
 void app_data_set_weather(const HomeWeatherData &weather);
+void app_data_set_weather_forecast(const WeatherForecastDay *days, uint8_t count,
+                                   uint32_t version = 0U, bool stale = false);
+bool app_data_get_weather_forecast(WeatherForecastDay *days, uint8_t count,
+                                   uint32_t *version = nullptr);
 void app_data_set_environment(const HomeEnvironmentData &environment);
 void app_data_set_battery(const HomeBatteryData &battery);
 void app_data_update_runtime(uint32_t uptime_ms, uint32_t hardware_bits);

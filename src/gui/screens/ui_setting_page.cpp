@@ -1,37 +1,82 @@
 #include "gui/screens/ui_setting_page.h"
 
+#include <cstdio>
+
+#include "app/settings_app.h"
 #include "gui/egui_port.h"
 #include "gui/gui_common.h"
 
 namespace {
-GuiEguiView page_view;
+GuiEguiView view;
+AppSettings settings = {};
+AppSettings backup = {};
+uint8_t selected = 0U;
+bool editing = false;
+constexpr uint8_t ITEM_COUNT = 7U;
+
+const char *labels[ITEM_COUNT] = {"POETRY POPUP", "POETRY INTERVAL", "POETRY DURATION", "WEATHER INTERVAL", "HOME THEME", "SCREEN SLEEP", "AUTO POWER OFF"};
+
+void format_value(uint8_t i, char *out, size_t size) {
+    switch (i) {
+        case 0: std::snprintf(out, size, "%s", settings.poetry_enabled ? "ON" : "OFF"); break;
+        case 1: std::snprintf(out, size, settings.poetry_interval_min ? "%u MIN" : "OFF", settings.poetry_interval_min); break;
+        case 2: std::snprintf(out, size, "%u SEC", settings.poetry_duration_s); break;
+        case 3: std::snprintf(out, size, settings.weather_interval_min ? "%u MIN" : "OFF", settings.weather_interval_min); break;
+        case 4: std::snprintf(out, size, "THEME %u", settings.home_theme); break;
+        case 5: std::snprintf(out, size, settings.screen_idle_min ? "%u MIN" : "OFF", settings.screen_idle_min); break;
+        case 6: std::snprintf(out, size, settings.auto_off_min ? "%u MIN" : "OFF", settings.auto_off_min); break;
+        default: out[0] = '\0'; break;
+    }
+}
 
 void draw(egui_canvas_t *canvas) {
     gui_draw_page_background(canvas);
-    gui_draw_header(canvas, "SETTING");
+    gui_draw_header(canvas, editing ? "SETTING EDIT" : "SETTING");
+    const uint8_t first = selected > 5U ? selected - 5U : 0U;
+    for (uint8_t row = 0U; row < 6U && first + row < ITEM_COUNT; ++row) {
+        const uint8_t i = first + row;
+        const int16_t y = static_cast<int16_t>(27 + row * 22);
+        if (i == selected) egui_canvas_draw_rectangle_fill(canvas, 4, y - 2, 376, 20, EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+        const egui_color_t color = i == selected ? EGUI_COLOR_WHITE : EGUI_COLOR_BLACK;
+        egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4), labels[i], 12, y, color, EGUI_ALPHA_100);
+        char value[20] = {};
+        format_value(i, value, sizeof(value));
+        egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4), value, 270, y, color, EGUI_ALPHA_100);
+    }
+    gui_draw_text(canvas, 12, 153, editing ? "MIDDLE SAVE  RIGHT CANCEL" : "MIDDLE EDIT  RIGHT BACK");
 }
 
-void init() {
-    gui_egui_view_init(&page_view, egui_port_core(), draw);
+void adjust(int delta) {
+    switch (selected) {
+        case 0: settings.poetry_enabled = !settings.poetry_enabled; break;
+        case 1: settings.poetry_interval_min = settings.poetry_interval_min == 0U ? 5U : static_cast<uint16_t>(settings.poetry_interval_min + delta * 5); if (settings.poetry_interval_min > 60U) settings.poetry_interval_min = 0U; break;
+        case 2: settings.poetry_duration_s = static_cast<uint16_t>(constrain(static_cast<int>(settings.poetry_duration_s) + delta * 5, 5, 300)); break;
+        case 3: settings.weather_interval_min = settings.weather_interval_min == 0U ? 30U : static_cast<uint16_t>(settings.weather_interval_min + delta * 30); if (settings.weather_interval_min > 300U) settings.weather_interval_min = 0U; break;
+        case 4: settings.home_theme = settings.home_theme == 1U ? 2U : 1U; break;
+        case 5: settings.screen_idle_min = settings.screen_idle_min == 0U ? 1U : static_cast<uint16_t>(settings.screen_idle_min + delta); if (settings.screen_idle_min > 360U) settings.screen_idle_min = 0U; break;
+        case 6: settings.auto_off_min = settings.auto_off_min == 0U ? 30U : static_cast<uint16_t>(settings.auto_off_min + delta * 30); if (settings.auto_off_min > 480U) settings.auto_off_min = 0U; break;
+    }
 }
 
-void enter() {
-    egui_view_invalidate_full(EGUI_VIEW_OF(&page_view));
-}
-
+void init() { gui_egui_view_init(&view, egui_port_core(), draw); settings = settings_app_get(); }
+void enter() { settings = settings_app_get(); selected = 0U; editing = false; }
 void exit() {}
-
-bool key_consume(const KeyEvent &) { return false; }
-
+bool key_consume(const KeyEvent &event) {
+    if (editing) {
+        if (event.id == KeyId::Right && event.gesture == KeyGesture::LongPress) { settings = backup; editing = false; return true; }
+        if (event.id == KeyId::Left && event.gesture == KeyGesture::Click) { adjust(-1); return true; }
+        if (event.id == KeyId::Right && event.gesture == KeyGesture::Click) { adjust(1); return true; }
+        if (event.id == KeyId::Middle && event.gesture == KeyGesture::Click) { (void)settings_app_update(settings); editing = false; return true; }
+        return true;
+    }
+    if (event.id == KeyId::Middle && event.gesture == KeyGesture::Click) { backup = settings; editing = true; return true; }
+    if (event.id == KeyId::Left && event.gesture == KeyGesture::Click) { selected = static_cast<uint8_t>((selected + ITEM_COUNT - 1U) % ITEM_COUNT); return true; }
+    if (event.id == KeyId::Right && event.gesture == KeyGesture::Click) { selected = static_cast<uint8_t>((selected + 1U) % ITEM_COUNT); return true; }
+    return false;
+}
 bool service() { return false; }
 bool update_status(const PlayerStatus &) { return false; }
-
-GuiPageDescriptor descriptor = {
-    UiPage::Setting, init, enter, exit, key_consume, service, update_status,
-    EGUI_VIEW_OF(&page_view), "setting", true, false,
-};
+GuiPageDescriptor descriptor = {UiPage::Setting, init, enter, exit, key_consume, service, update_status, EGUI_VIEW_OF(&view), "setting", true, false};
 }
 
-GuiPageDescriptor &ui_setting_page_descriptor() {
-    return descriptor;
-}
+GuiPageDescriptor &ui_setting_page_descriptor() { return descriptor; }

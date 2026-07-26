@@ -10,6 +10,8 @@ SemaphoreHandle_t snapshot_mutex = nullptr;
 AppDataSnapshot current_snapshot = {};
 AppTime injected_time = {};
 HomeWeatherData injected_weather = {};
+WeatherForecastDay injected_forecast[APP_WEATHER_FORECAST_DAYS] = {};
+uint32_t injected_forecast_version = 0U;
 HomeEnvironmentData injected_environment = {};
 HomeBatteryData injected_battery = {};
 uint32_t version = 0;
@@ -134,6 +136,9 @@ void rebuild_locked() {
     current_snapshot.time = injected_time;
     current_snapshot.time.valid = time_is_valid(injected_time);
     current_snapshot.weather = injected_weather;
+    std::memcpy(current_snapshot.forecast, injected_forecast,
+                sizeof(current_snapshot.forecast));
+    current_snapshot.forecast_version = injected_forecast_version;
     current_snapshot.environment = injected_environment;
     current_snapshot.battery = injected_battery;
     if (!current_snapshot.weather.valid) {
@@ -170,6 +175,9 @@ void app_data_attach_mutex(SemaphoreHandle_t mutex) {
     if (lock_snapshot(portMAX_DELAY)) {
         injected_weather.icon_id = 499;
         injected_weather.scene = WEATHER_SCENE_UNKNOWN;
+        if (injected_forecast_version == 0U) {
+            injected_forecast_version = 1U;
+        }
         rebuild_locked();
         unlock_snapshot();
     }
@@ -180,6 +188,8 @@ void app_data_set_snapshot(const AppDataSnapshot &snapshot) {
         current_snapshot = snapshot;
         injected_time = snapshot.time;
         injected_weather = snapshot.weather;
+        std::memcpy(injected_forecast, snapshot.forecast, sizeof(injected_forecast));
+        injected_forecast_version = snapshot.forecast_version;
         injected_environment = snapshot.environment;
         injected_battery = snapshot.battery;
         external_time_source = true;
@@ -213,6 +223,48 @@ void app_data_set_weather(const HomeWeatherData &weather) {
         rebuild_locked();
         unlock_snapshot();
     }
+}
+
+void app_data_set_weather_forecast(const WeatherForecastDay *days, uint8_t count,
+                                   uint32_t forecast_version, bool stale) {
+    if ((days == nullptr) || (count == 0U)) {
+        return;
+    }
+    if (count > APP_WEATHER_FORECAST_DAYS) {
+        count = APP_WEATHER_FORECAST_DAYS;
+    }
+    if (lock_snapshot(portMAX_DELAY)) {
+        std::memcpy(injected_forecast, days,
+                    static_cast<size_t>(count) * sizeof(WeatherForecastDay));
+        for (uint8_t i = 0U; i < count; ++i) {
+            injected_forecast[i].stale = stale;
+            injected_forecast[i].valid = true;
+        }
+        for (uint8_t i = count; i < APP_WEATHER_FORECAST_DAYS; ++i) {
+            injected_forecast[i] = {};
+        }
+        injected_forecast_version = forecast_version == 0U ? injected_forecast_version + 1U
+                                                            : forecast_version;
+        rebuild_locked();
+        unlock_snapshot();
+    }
+}
+
+bool app_data_get_weather_forecast(WeatherForecastDay *days, uint8_t count,
+                                   uint32_t *forecast_version) {
+    if ((days == nullptr) || (count == 0U) || !lock_snapshot(pdMS_TO_TICKS(20))) {
+        return false;
+    }
+    if (count > APP_WEATHER_FORECAST_DAYS) {
+        count = APP_WEATHER_FORECAST_DAYS;
+    }
+    std::memcpy(days, current_snapshot.forecast,
+                static_cast<size_t>(count) * sizeof(WeatherForecastDay));
+    if (forecast_version != nullptr) {
+        *forecast_version = current_snapshot.forecast_version;
+    }
+    unlock_snapshot();
+    return true;
 }
 
 void app_data_set_environment(const HomeEnvironmentData &environment) {
@@ -283,6 +335,24 @@ void app_data_update_temporary_home_data(uint32_t uptime_ms,
     injected_battery.full = false;
     injected_battery.valid = true;
     injected_battery.stale = false;
+
+    static constexpr int16_t highs[APP_WEATHER_FORECAST_DAYS] = {32, 33, 31, 30, 29, 31, 32};
+    static constexpr int16_t lows[APP_WEATHER_FORECAST_DAYS] = {24, 25, 23, 22, 21, 23, 24};
+    static constexpr uint16_t icons[APP_WEATHER_FORECAST_DAYS] = {100, 101, 101, 305, 305, 306, 100};
+    for (uint8_t i = 0U; i < APP_WEATHER_FORECAST_DAYS; ++i) {
+        WeatherForecastDay &day = injected_forecast[i];
+        day.version = injected_forecast_version + 1U;
+        day.year = temporary_time.year;
+        day.month = temporary_time.month;
+        day.day = static_cast<uint8_t>(temporary_time.day + i);
+        day.high_c = highs[i];
+        day.low_c = lows[i];
+        day.icon_id = icons[i];
+        day.scene = (i == 3U || i == 4U) ? WEATHER_SCENE_LIGHT_RAIN : WEATHER_SCENE_CLEAR;
+        day.valid = true;
+        day.stale = false;
+    }
+    injected_forecast_version++;
 
     current_snapshot.uptime_ms = uptime_ms;
     current_snapshot.hardware_bits = hardware_bits;

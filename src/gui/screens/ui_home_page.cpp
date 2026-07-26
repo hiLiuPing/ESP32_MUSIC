@@ -13,6 +13,7 @@
 #include "gui/resources/home_sky_objects_res.h"
 #include "gui/resources/icons.h"
 #include "gui/page.h"
+#include "gui/ui_heiti_font.h"
 
 #define UI_SCREEN_W EGUI_CONFIG_SCREEN_WIDTH
 #define UI_SCREEN_H EGUI_CONFIG_SCREEN_HEIGHT
@@ -38,11 +39,11 @@ static inline bool Time32_Reached(uint32_t now, uint32_t deadline) {
 }
 
 static inline const egui_font_t *ui_heiti_font_get_16() {
-    return EGUI_FONT_OF(&egui_res_font_montserrat_16_4);
+    return ui_heiti_font_get(16U);
 }
 
 static inline const egui_font_t *ui_heiti_font_get_18() {
-    return EGUI_FONT_OF(&egui_res_font_montserrat_18_4);
+    return ui_heiti_font_get(18U);
 }
 
 typedef struct
