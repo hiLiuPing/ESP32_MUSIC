@@ -52,8 +52,20 @@ bool bsp_littlefs_init() {
         Serial.println("[LittleFS] lock failed");
         return false;
     }
-    const bool mount_ok = LittleFS.begin(false);
+    bool mount_ok = LittleFS.begin(false);
+    if (!mount_ok) {
+        Serial.println("[LittleFS] mount failed, formatting partition");
+        const bool format_ok = LittleFS.format();
+        if (format_ok) {
+            Serial.println("[LittleFS] format complete, retrying mount");
+            mount_ok = LittleFS.begin(false);
+        } else {
+            Serial.println("[LittleFS] format failed");
+        }
+    }
     if (mount_ok) {
+        const double size_mb = static_cast<double>(LittleFS.totalBytes()) / (1024.0 * 1024.0);
+        Serial.printf("[LittleFS] size=%.2f MB\n", size_mb);
         Serial.println("[LittleFS] mounted, file list:");
         File root = LittleFS.open("/");
         if (root) {
