@@ -10,27 +10,41 @@
 void hardware_init_task(void *parameter) {
     (void)parameter;
 
-    // Mount LittleFS before publishing display readiness so GUI resources are
-    // available before the GUI task can start rendering pages.
     Serial.println("[HW] LittleFS init");
-    if (bsp_littlefs_init()) {
+    const bool littlefs_ready = bsp_littlefs_init();
+    if (littlefs_ready) {
         Serial.println("[HW] LittleFS ready");
     } else {
         Serial.println("[HW] LittleFS unavailable");
-    }
-
-    Serial.println("[HW] display init");
-    if (bsp_display_init()) {
-        xEventGroupSetBits(HardwareEventGroup, HW_EVENT_DISPLAY_READY);
+        system_notify_post(SystemNotifyType::Storage, "LITTLEFS UNAVAILABLE");
     }
 
     Serial.println("[HW] SD init");
-    if (bsp_storage_init()) {
+    const bool sd_ready = bsp_storage_init();
+    if (sd_ready) {
         Serial.println("[HW] SD ready");
         xEventGroupSetBits(HardwareEventGroup, HW_EVENT_SD_READY);
     } else {
         Serial.println("[HW] SD unavailable");
         system_notify_post(SystemNotifyType::Storage, "SD CARD UNAVAILABLE");
+    }
+
+    if (littlefs_ready && sd_ready) {
+        Serial.println("[HW] LittleFS resource sync");
+        if (bsp_littlefs_sync_from(bsp_storage_fs(), "/data")) {
+            Serial.println("[HW] LittleFS resource sync complete");
+        } else {
+            Serial.println("[HW] LittleFS resource sync failed");
+            system_notify_post(SystemNotifyType::Storage, "RESOURCE SYNC FAILED");
+        }
+    } else {
+        Serial.println("[HW] LittleFS resource sync skipped");
+    }
+
+    // Publish display readiness only after LittleFS resources are stable.
+    Serial.println("[HW] display init");
+    if (bsp_display_init()) {
+        xEventGroupSetBits(HardwareEventGroup, HW_EVENT_DISPLAY_READY);
     }
 
     Serial.println("[HW] WM8978 init");

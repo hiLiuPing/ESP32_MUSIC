@@ -4,33 +4,38 @@
 #include "gui/egui_port.h"
 #include "gui/gui_common.h"
 #include "gui/ui_heiti_font.h"
+#include "gui/ui_popups.h"
 
 namespace {
 GuiEguiView view;
 PoetryEntry entry = {};
 PoetryCollection collection = PoetryCollection::Song3000;
+bool content_ready = false;
+
+void refresh_content() {
+    content_ready = false;
+    for (uint8_t retry = 0U; retry < 24U && !content_ready; ++retry) {
+        content_ready = poetry_app_get_random(collection, &entry) &&
+                        ui_poetry_popup_prepare_cached(&entry);
+    }
+}
 
 void draw(egui_canvas_t *canvas) {
     gui_draw_page_background(canvas);
-    gui_draw_header(canvas, "POETRY");
-    gui_draw_text(canvas, 12, 30, poetry_app_collection_name(collection));
-    if (!entry.valid) {
-        gui_draw_text(canvas, 12, 65, "NO POETRY RESOURCE");
+    if (content_ready && ui_poetry_popup_draw_cached(canvas)) {
         return;
     }
-    const egui_font_t *font = ui_heiti_font_get(16U);
-    egui_canvas_draw_text(canvas, font, entry.title, 18, 53, EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-    egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4), entry.author, 18, 76, EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-    egui_region_t body = {{18, 96}, {348, 52}};
-    egui_canvas_draw_text_in_rect(canvas, font, entry.body, &body, EGUI_ALIGN_LEFT, EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+    egui_region_t message = {{54, 58}, {320, 28}};
+    egui_canvas_draw_text_in_rect(canvas, ui_heiti_font_get(16U), "诗词资源加载失败", &message,
+                                  EGUI_ALIGN_CENTER, EGUI_COLOR_BLACK, EGUI_ALPHA_100);
 }
 void init() { gui_egui_view_init(&view, egui_port_core(), draw); poetry_app_init(); }
-void enter() { (void)poetry_app_get_random(collection, &entry); }
+void enter() { refresh_content(); }
 void exit() {}
 bool key_consume(const KeyEvent &event) {
     if (event.id != KeyId::Middle || event.gesture != KeyGesture::Click) return false;
     collection = static_cast<PoetryCollection>((static_cast<uint8_t>(collection) + 1U) % 4U);
-    (void)poetry_app_get_random(collection, &entry);
+    refresh_content();
     return true;
 }
 bool service() { return false; }

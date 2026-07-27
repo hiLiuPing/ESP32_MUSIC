@@ -133,6 +133,7 @@ void show_ap_notice() {
 }
 }
 
+
 bool weather_sync_request(uint32_t request) {
     return WeatherSyncTaskHandle != nullptr &&
            xTaskNotify(WeatherSyncTaskHandle, request, eSetBits) == pdPASS;
