@@ -9,9 +9,9 @@ WM8978 codec. The firmware is split into four layers:
 - `src/gui`: boot, home, music, weather, poetry and setting pages.
 
 The player does not start playback at boot. It recursively indexes up to 128 MP3
-files from the SD card and waits on the first track. Weather/time synchronization
-is disabled by default; when enabled in Setting, the firmware uses the saved
-Wi-Fi profile to query NTP and QWeather on the configured interval.
+files below `/music` on the SD card and waits on the first track. Weather/time
+synchronization is disabled by default; when enabled in Setting, the firmware
+uses the saved Wi-Fi profile to query NTP and QWeather on the configured interval.
 
 When no Wi-Fi profile exists, or when `WIFI CONFIG` is started from Setting, the
 device creates the `DuduClock` access point at `192.168.1.1`. Submit the Wi-Fi,
@@ -41,9 +41,10 @@ rescan
 status
 ```
 
-On the music page, `up` and `down` select a track and `ok` starts it. Pressing
-`ok` on the active track toggles pause. `prev` and `next` change the playing
-track; `page-prev` and `page-next` change pages.
+On the music page, left and right move within the focused player or track-list
+area, and the middle key activates the selected control or track. Hold the
+middle key to switch between the two areas. Hold the right key to return to the
+previous page. Playback continues after leaving the music page.
 
 ## Build
 

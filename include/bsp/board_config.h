@@ -24,7 +24,7 @@ constexpr uint8_t I2sDataIn = 13;
 constexpr uint8_t I2cSda = 17;
 constexpr uint8_t I2cScl = 16;
 constexpr uint8_t AudioPower = 18;
-constexpr uint8_t AudioEnable = 21;
+constexpr uint8_t AmplifierEnable = 21;
 constexpr uint8_t HeadphoneDetect = 47;
 constexpr uint8_t StatusLed = 48;
 

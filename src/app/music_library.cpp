@@ -46,6 +46,7 @@ bool is_mp3_path(const char *path) {
 }
 
 constexpr uint8_t MAX_SCAN_DEPTH = 16;
+constexpr const char *MUSIC_ROOT = "/music";
 
 void scan_directory(fs::FS &filesystem, const char *directory_path, uint8_t depth) {
     if ((track_count >= PLAYER_MAX_TRACKS) || (depth > MAX_SCAN_DEPTH)) {
@@ -93,7 +94,7 @@ bool music_library_scan(fs::FS &filesystem) {
 
     track_count = 0;
     std::memset(tracks, 0, sizeof(tracks));
-    scan_directory(filesystem, "/", 0);
+    scan_directory(filesystem, MUSIC_ROOT, 0);
     std::sort(tracks, tracks + track_count, [](const TrackEntry &left, const TrackEntry &right) {
         return strcasecmp(left.path, right.path) < 0;
     });
