@@ -549,10 +549,17 @@ int font_size(const egui_font_t *font, const void *string, uint8_t multi, egui_d
             (void)egui_font_get_str_size_with_canvas(fallback, nullptr, one, 0U, 0, &fw, &fh);
             advance = fw > 0 ? fw : static_cast<egui_dim_t>(ctx->requested_size / 2U);
         } else {
-            uint32_t glyph = 0U;
-            GlyphDsc dsc = {};
-            advance = ctx->ready && lookup(*ctx, cp, &glyph) && get_glyph_dsc(*ctx, glyph, &dsc) ?
-                          dsc.advance : ctx->requested_size;
+            GlyphCacheEntry *cached = find_cached_glyph(*ctx, cp);
+            if (cached != nullptr) {
+                advance = cached->dsc.advance;
+            } else {
+                uint32_t glyph = 0U;
+                GlyphDsc dsc = {};
+                advance = ctx->ready && lookup(*ctx, cp, &glyph) &&
+                                  get_glyph_dsc(*ctx, glyph, &dsc)
+                              ? dsc.advance
+                              : ctx->requested_size;
+            }
         }
         line_width = static_cast<egui_dim_t>(line_width + advance);
         text += bytes;

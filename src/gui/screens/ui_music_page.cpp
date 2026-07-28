@@ -28,6 +28,12 @@ constexpr int16_t SPECTRUM_HEIGHT = 61;
 constexpr int16_t SPECTRUM_PEAK_HEIGHT = 2;
 constexpr int16_t PROGRESS_Y = 95;
 constexpr int16_t TIME_Y = 105;
+constexpr egui_region_t TITLE_REGION = {{12, 1}, {360, 20}};
+constexpr egui_region_t SPECTRUM_REGION = {{12, 23}, {360, 65}};
+constexpr egui_region_t PROGRESS_REGION = {{12, 91}, {360, 34}};
+constexpr egui_region_t CONTROLS_REGION = {{0, 128}, {384, 40}};
+constexpr egui_region_t PLAYLIST_HEADER_REGION = {{0, 0}, {384, 22}};
+constexpr egui_region_t PLAYLIST_EMPTY_REGION = {{12, 62}, {360, 28}};
 
 enum class MusicSubview : uint8_t {
     Main,
@@ -51,6 +57,15 @@ uint8_t spectrum_pixel_height(uint8_t level) {
     if (level == 0) return 0;
     return static_cast<uint8_t>(std::max<int16_t>(
         2, static_cast<int16_t>((level * SPECTRUM_HEIGHT) / 255)));
+}
+
+bool work_intersects(egui_canvas_t *canvas, const egui_region_t &region) {
+    const egui_region_t *work = egui_canvas_get_base_view_work_region(canvas);
+    return work != nullptr &&
+           work->location.x < region.location.x + region.size.width &&
+           work->location.x + work->size.width > region.location.x &&
+           work->location.y < region.location.y + region.size.height &&
+           work->location.y + work->size.height > region.location.y;
 }
 
 const egui_font_t *music_font() {
@@ -207,67 +222,77 @@ const char *empty_state_message() {
 
 void draw_main(egui_canvas_t *canvas) {
     gui_draw_page_background(canvas);
-    const char *title = player_status.file_name[0] == '\0' ? "MUSIC" : player_status.file_name;
-    draw_centered_text(canvas, music_font(), title, 12, 1, 360, 20);
+    if (work_intersects(canvas, TITLE_REGION)) {
+        const char *title = player_status.file_name[0] == '\0'
+                                ? "MUSIC"
+                                : player_status.file_name;
+        draw_centered_text(canvas, music_font(), title, 12, 1, 360, 20);
+    }
 
-    const char *message = empty_state_message();
-    if (message != nullptr) {
-        draw_centered_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
-                           message, 12, 49, 360, 22);
-    } else {
-        for (size_t index = 0; index < PLAYER_SPECTRUM_BANDS; ++index) {
-            const int16_t height = spectrum_pixel_height(displayed_spectrum[index]);
-            const int16_t x = static_cast<int16_t>(
-                14 + index * (SPECTRUM_BAR_WIDTH + SPECTRUM_BAR_GAP));
-            if (height > 0) {
-                egui_canvas_draw_rectangle_fill(canvas, x, SPECTRUM_BOTTOM - height,
-                                                SPECTRUM_BAR_WIDTH, height,
-                                                EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-            }
-            if (spectrum_peaks[index] > 0) {
-                egui_canvas_draw_rectangle_fill(
-                    canvas, x, SPECTRUM_BOTTOM - spectrum_peaks[index],
-                    SPECTRUM_BAR_WIDTH, SPECTRUM_PEAK_HEIGHT,
-                    EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+    if (work_intersects(canvas, SPECTRUM_REGION)) {
+        const char *message = empty_state_message();
+        if (message != nullptr) {
+            draw_centered_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                               message, 12, 49, 360, 22);
+        } else {
+            for (size_t index = 0; index < PLAYER_SPECTRUM_BANDS; ++index) {
+                const int16_t height = spectrum_pixel_height(displayed_spectrum[index]);
+                const int16_t x = static_cast<int16_t>(
+                    14 + index * (SPECTRUM_BAR_WIDTH + SPECTRUM_BAR_GAP));
+                if (height > 0) {
+                    egui_canvas_draw_rectangle_fill(canvas, x, SPECTRUM_BOTTOM - height,
+                                                    SPECTRUM_BAR_WIDTH, height,
+                                                    EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+                }
+                if (spectrum_peaks[index] > 0) {
+                    egui_canvas_draw_rectangle_fill(
+                        canvas, x, SPECTRUM_BOTTOM - spectrum_peaks[index],
+                        SPECTRUM_BAR_WIDTH, SPECTRUM_PEAK_HEIGHT,
+                        EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+                }
             }
         }
     }
 
-    constexpr int16_t progress_x = 16;
-    constexpr int16_t progress_width = 352;
-    egui_canvas_draw_round_rectangle(canvas, progress_x, PROGRESS_Y,
-                                     progress_width, 6, 3, 1,
-                                     EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-    uint32_t progress = 0;
-    if (player_status.duration_seconds > 0) {
-        progress = static_cast<uint32_t>(std::min<uint64_t>(
-            progress_width - 2,
-            (static_cast<uint64_t>(player_status.elapsed_seconds) *
-             (progress_width - 2)) / player_status.duration_seconds));
-    }
-    if (progress > 0) {
-        egui_canvas_draw_round_rectangle_fill(canvas, progress_x + 1, PROGRESS_Y + 1,
-                                              static_cast<int16_t>(progress), 4, 2,
-                                              EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-    }
-    const int16_t thumb_x = static_cast<int16_t>(progress_x + 1 + progress);
-    egui_canvas_draw_circle_fill_basic(canvas, thumb_x, PROGRESS_Y + 3, 4,
-                                       EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+    if (work_intersects(canvas, PROGRESS_REGION)) {
+        constexpr int16_t progress_x = 16;
+        constexpr int16_t progress_width = 352;
+        egui_canvas_draw_round_rectangle(canvas, progress_x, PROGRESS_Y,
+                                         progress_width, 6, 3, 1,
+                                         EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+        uint32_t progress = 0;
+        if (player_status.duration_seconds > 0) {
+            progress = static_cast<uint32_t>(std::min<uint64_t>(
+                progress_width - 2,
+                (static_cast<uint64_t>(player_status.elapsed_seconds) *
+                 (progress_width - 2)) / player_status.duration_seconds));
+        }
+        if (progress > 0) {
+            egui_canvas_draw_round_rectangle_fill(canvas, progress_x + 1, PROGRESS_Y + 1,
+                                                  static_cast<int16_t>(progress), 4, 2,
+                                                  EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+        }
+        const int16_t thumb_x = static_cast<int16_t>(progress_x + 1 + progress);
+        egui_canvas_draw_circle_fill_basic(canvas, thumb_x, PROGRESS_Y + 3, 4,
+                                           EGUI_COLOR_BLACK, EGUI_ALPHA_100);
 
-    char elapsed[12] = {};
-    char duration[12] = {};
-    gui_format_time(player_status.elapsed_seconds, elapsed, sizeof(elapsed));
-    gui_format_time(player_status.duration_seconds, duration, sizeof(duration));
-    egui_region_t elapsed_region = {{16, TIME_Y}, {100, 18}};
-    egui_canvas_draw_text_in_rect(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
-                                  elapsed, &elapsed_region,
-                                  EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER,
-                                  EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-    draw_right_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
-                    duration, 268, TIME_Y, 100, 18);
+        char elapsed[12] = {};
+        char duration[12] = {};
+        gui_format_time(player_status.elapsed_seconds, elapsed, sizeof(elapsed));
+        gui_format_time(player_status.duration_seconds, duration, sizeof(duration));
+        egui_region_t elapsed_region = {{16, TIME_Y}, {100, 18}};
+        egui_canvas_draw_text_in_rect(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                                      elapsed, &elapsed_region,
+                                      EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER,
+                                      EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+        draw_right_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                        duration, 268, TIME_Y, 100, 18);
+    }
 
-    for (uint8_t index = 0; index < CONTROL_COUNT; ++index) {
-        draw_control(canvas, index);
+    if (work_intersects(canvas, CONTROLS_REGION)) {
+        for (uint8_t index = 0; index < CONTROL_COUNT; ++index) {
+            draw_control(canvas, index);
+        }
     }
 }
 
@@ -320,18 +345,24 @@ void clamp_playlist_window() {
 
 void draw_playlist(egui_canvas_t *canvas) {
     gui_draw_page_background(canvas);
-    gui_draw_header(canvas, "PLAYLIST");
-    char count[24] = {};
-    std::snprintf(count, sizeof(count), "%u/%u",
-                  player_status.track_count == 0 ? 0 : selected_track + 1,
-                  player_status.track_count);
-    draw_right_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
-                    count, 280, 1, 94, 20);
+    if (work_intersects(canvas, PLAYLIST_HEADER_REGION)) {
+        gui_draw_header(canvas, "PLAYLIST");
+        char count[24] = {};
+        std::snprintf(count, sizeof(count), "%u/%u",
+                      player_status.track_count == 0 ? 0 : selected_track + 1,
+                      player_status.track_count);
+        draw_right_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                        count, 280, 1, 94, 20);
+    }
 
     if (player_status.track_count == 0) {
-        draw_centered_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
-                           empty_state_message() == nullptr ? "NO TRACKS" : empty_state_message(),
-                           12, 62, 360, 28);
+        if (work_intersects(canvas, PLAYLIST_EMPTY_REGION)) {
+            draw_centered_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                               empty_state_message() == nullptr
+                                   ? "NO TRACKS"
+                                   : empty_state_message(),
+                               12, 62, 360, 28);
+        }
         return;
     }
 
@@ -339,6 +370,8 @@ void draw_playlist(egui_canvas_t *canvas) {
         const uint16_t index = visible_track_start + row;
         if (index >= player_status.track_count) break;
         const int16_t y = static_cast<int16_t>(24 + row * 20);
+        const egui_region_t row_region = {{4, y}, {376, 19}};
+        if (!work_intersects(canvas, row_region)) continue;
         const bool focused = index == selected_track;
         if (focused) {
             egui_canvas_draw_rectangle_fill(canvas, 4, y, 376, 19,
@@ -536,7 +569,10 @@ bool service() {
         changed = changed || displayed_spectrum[index] != old_value ||
                   spectrum_peaks[index] != old_peak;
     }
-    return changed && subview == MusicSubview::Main;
+    if (changed && subview == MusicSubview::Main) {
+        egui_view_invalidate_region(EGUI_VIEW_OF(&view), &SPECTRUM_REGION);
+    }
+    return false;
 }
 
 bool update_status(const PlayerStatus &status) {
@@ -554,16 +590,19 @@ bool update_status(const PlayerStatus &status) {
 
     switch (subview) {
         case MusicSubview::Main:
-            return playback_context_changed ||
-                   previous.track_index != status.track_index ||
-                   previous.track_count != status.track_count ||
-                   previous.elapsed_seconds != status.elapsed_seconds ||
-                   previous.duration_seconds != status.duration_seconds ||
-                   previous.volume != status.volume ||
-                   previous.playback_mode != status.playback_mode ||
-                   std::strcmp(previous.file_name, status.file_name) != 0 ||
-                   std::memcmp(previous.spectrum, status.spectrum,
-                               sizeof(status.spectrum)) != 0;
+            if (playback_context_changed ||
+                previous.track_index != status.track_index ||
+                previous.track_count != status.track_count ||
+                previous.volume != status.volume ||
+                previous.playback_mode != status.playback_mode ||
+                std::strcmp(previous.file_name, status.file_name) != 0) {
+                return true;
+            }
+            if (previous.elapsed_seconds != status.elapsed_seconds ||
+                previous.duration_seconds != status.duration_seconds) {
+                egui_view_invalidate_region(EGUI_VIEW_OF(&view), &PROGRESS_REGION);
+            }
+            return false;
         case MusicSubview::Volume:
             return playback_context_changed || previous.volume != status.volume;
         case MusicSubview::Playlist:

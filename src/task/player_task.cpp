@@ -133,15 +133,18 @@ void analyze_pcm(int16_t *buffer, uint16_t frame_count) {
     }
 
     constexpr float fft_scale = FFT_SIZE * 0.25F;
+    constexpr float fft_scale_squared = fft_scale * fft_scale;
     constexpr float db_span = SPECTRUM_MAX_DB - SPECTRUM_MIN_DB;
     for (size_t band = 0; band < PLAYER_SPECTRUM_BANDS; ++band) {
-        float peak = 0.0F;
+        float peak_power = 0.0F;
         for (uint16_t bin = band_start[band]; bin < band_end[band]; ++bin) {
             const float real = fft_data[bin * 2];
             const float imaginary = fft_data[bin * 2 + 1];
-            peak = std::max(peak, std::sqrt(real * real + imaginary * imaginary));
+            peak_power = std::max(peak_power,
+                                  real * real + imaginary * imaginary);
         }
-        const float db = 20.0F * std::log10(peak / fft_scale + 1.0e-9F);
+        const float db = 10.0F *
+                         std::log10(peak_power / fft_scale_squared + 1.0e-18F);
         const float normalized = (db - SPECTRUM_MIN_DB) / db_span;
         status.spectrum[band] = static_cast<uint8_t>(
             constrain(static_cast<int>(normalized * 255.0F), 0, 255));
