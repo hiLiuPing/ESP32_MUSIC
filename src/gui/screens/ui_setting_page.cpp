@@ -10,9 +10,9 @@
 namespace {
 GuiEguiView view;
 AppSettings settings = {};
-AppSettings backup = {};
 uint8_t selected = 0U;
 bool editing = false;
+bool navigation_active = false;
 bool last_provisioning = false;
 constexpr uint8_t ITEM_COUNT = 9U;
 
@@ -40,14 +40,17 @@ void draw(egui_canvas_t *canvas) {
     for (uint8_t row = 0U; row < 6U && first + row < ITEM_COUNT; ++row) {
         const uint8_t i = first + row;
         const int16_t y = static_cast<int16_t>(27 + row * 22);
-        if (i == selected) egui_canvas_draw_rectangle_fill(canvas, 4, y - 2, 376, 20, EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-        const egui_color_t color = i == selected ? EGUI_COLOR_WHITE : EGUI_COLOR_BLACK;
+        const bool focused = navigation_active && i == selected;
+        if (focused) egui_canvas_draw_rectangle_fill(canvas, 4, y - 2, 376, 20, EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+        const egui_color_t color = focused ? EGUI_COLOR_WHITE : EGUI_COLOR_BLACK;
         egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4), labels[i], 12, y, color, EGUI_ALPHA_100);
         char value[20] = {};
         format_value(i, value, sizeof(value));
         egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4), value, 270, y, color, EGUI_ALPHA_100);
     }
-    gui_draw_text(canvas, 12, 153, editing ? "MIDDLE SAVE  RIGHT CANCEL" : "MIDDLE EDIT  RIGHT BACK");
+    if (navigation_active) {
+        gui_draw_text(canvas, 12, 153, editing ? "MIDDLE SAVE" : "MIDDLE EDIT");
+    }
 }
 
 void adjust(int delta) {
@@ -71,16 +74,17 @@ void adjust(int delta) {
 }
 
 void init() { gui_egui_view_init(&view, egui_port_core(), draw); settings = settings_app_get(); last_provisioning = weather_sync_is_provisioning(); }
-void enter() { settings = settings_app_get(); selected = 0U; editing = false; last_provisioning = weather_sync_is_provisioning(); }
+void enter() { settings = settings_app_get(); selected = 0U; editing = false; navigation_active = false; last_provisioning = weather_sync_is_provisioning(); }
 void exit() {}
+void navigation_changed(bool active) {
+    navigation_active = active;
+    if (!active && editing) {
+        settings = settings_app_get();
+        editing = false;
+    }
+}
 bool key_consume(const KeyEvent &event) {
     if (editing) {
-        if (event.id == KeyId::Right && event.gesture == KeyGesture::LongPress) {
-            settings = backup;
-            editing = false;
-            Serial.printf("[SETTING] cancel item=%u\n", selected);
-            return true;
-        }
         if (event.id == KeyId::Left && event.gesture == KeyGesture::Click) { adjust(-1); return true; }
         if (event.id == KeyId::Right && event.gesture == KeyGesture::Click) { adjust(1); return true; }
         if (event.id == KeyId::Middle && event.gesture == KeyGesture::Click) {
@@ -96,7 +100,6 @@ bool key_consume(const KeyEvent &event) {
         return true;
     }
     if (event.id == KeyId::Middle && event.gesture == KeyGesture::Click) {
-        backup = settings;
         editing = true;
         Serial.printf("[SETTING] enter item=%u\n", selected);
         return true;
@@ -112,7 +115,7 @@ bool service() {
     return true;
 }
 bool update_status(const PlayerStatus &) { return false; }
-GuiPageDescriptor descriptor = {UiPage::Setting, init, enter, exit, key_consume, service, update_status, EGUI_VIEW_OF(&view), "setting", true, false};
+GuiPageDescriptor descriptor = {UiPage::Setting, init, enter, exit, key_consume, service, update_status, EGUI_VIEW_OF(&view), "setting", true, false, navigation_changed};
 }
 
 GuiPageDescriptor &ui_setting_page_descriptor() { return descriptor; }

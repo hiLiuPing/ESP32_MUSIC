@@ -32,6 +32,7 @@ void draw(egui_canvas_t *canvas) {
 void init() { gui_egui_view_init(&view, egui_port_core(), draw); poetry_app_init(); }
 void enter() { refresh_content(); }
 void exit() {}
+void navigation_changed(bool) {}
 bool key_consume(const KeyEvent &event) {
     if (event.id != KeyId::Middle || event.gesture != KeyGesture::Click) return false;
     collection = static_cast<PoetryCollection>((static_cast<uint8_t>(collection) + 1U) % 4U);
@@ -40,6 +41,6 @@ bool key_consume(const KeyEvent &event) {
 }
 bool service() { return false; }
 bool update_status(const PlayerStatus &) { return false; }
-GuiPageDescriptor descriptor = {UiPage::Poetry, init, enter, exit, key_consume, service, update_status, EGUI_VIEW_OF(&view), "poetry", true, false};
+GuiPageDescriptor descriptor = {UiPage::Poetry, init, enter, exit, key_consume, service, update_status, EGUI_VIEW_OF(&view), "poetry", true, false, navigation_changed};
 }
 GuiPageDescriptor &ui_poetry_page_descriptor() { return descriptor; }

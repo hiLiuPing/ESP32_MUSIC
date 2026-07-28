@@ -8,6 +8,13 @@ constexpr size_t PLAYER_NAME_LENGTH = 128;
 constexpr uint8_t PLAYER_VOLUME_MIN = 0;
 constexpr uint8_t PLAYER_VOLUME_MAX = 21;
 constexpr uint8_t PLAYER_DEFAULT_VOLUME = 12;
+constexpr size_t PLAYER_SPECTRUM_BANDS = 24;
+
+enum class PlaybackMode : uint8_t {
+    RepeatAll,
+    RepeatOne,
+    Shuffle,
+};
 
 enum class PlayerState : uint8_t {
     Initializing,
@@ -40,6 +47,7 @@ enum class PlayerCommandType : uint8_t {
     Next,
     SetVolume,
     ChangeVolume,
+    CyclePlaybackMode,
     Rescan,
 };
 
@@ -57,5 +65,7 @@ struct PlayerStatus {
     uint32_t elapsed_seconds;
     uint32_t duration_seconds;
     uint8_t volume;
+    PlaybackMode playback_mode;
+    uint8_t spectrum[PLAYER_SPECTRUM_BANDS];
     char file_name[PLAYER_NAME_LENGTH];
 };

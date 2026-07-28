@@ -5,329 +5,348 @@
 #include <cstring>
 
 #include "app/music_library.h"
-#include "app/player_app.h"
 #include "gui/egui_port.h"
 #include "gui/gui_common.h"
 #include "gui/ui_heiti_font.h"
 #include "task/task_system.h"
 
 namespace {
-constexpr int16_t PLAYER_PANEL_WIDTH = 150;
-constexpr int16_t TRACK_LIST_X = PLAYER_PANEL_WIDTH + 4;
-constexpr int16_t TRACK_LIST_Y = 24;
-constexpr int16_t TRACK_LIST_WIDTH = EGUI_CONFIG_SCREEN_WIDTH - TRACK_LIST_X;
-constexpr int16_t TRACK_LIST_HEIGHT = EGUI_CONFIG_SCREEN_HEIGHT - TRACK_LIST_Y;
-constexpr int16_t TRACK_ROW_HEIGHT = 17;
-constexpr uint16_t VISIBLE_TRACK_ROWS = 6;
+constexpr uint8_t CONTROL_COUNT = 6;
+constexpr uint8_t CONTROL_VOLUME = 0;
+constexpr uint8_t CONTROL_MODE = 1;
+constexpr uint8_t CONTROL_PREVIOUS = 2;
+constexpr uint8_t CONTROL_PLAY = 3;
+constexpr uint8_t CONTROL_NEXT = 4;
+constexpr uint8_t CONTROL_PLAYLIST = 5;
+constexpr uint8_t PLAYLIST_ROWS = 7;
+constexpr uint32_t SPECTRUM_FRAME_MS = 80;
 
-constexpr int16_t CONTROL_X = 8;
-constexpr int16_t CONTROL_Y = 138;
-constexpr int16_t CONTROL_WIDTH = 40;
-constexpr int16_t CONTROL_HEIGHT = 26;
-constexpr int16_t CONTROL_GAP = 7;
-constexpr uint8_t CONTROL_COUNT = 3;
-constexpr uint8_t PLAY_PAUSE_CONTROL = 1;
-
-enum class FocusZone : uint8_t {
-    Player,
-    TrackList,
+enum class MusicSubview : uint8_t {
+    Main,
+    Volume,
+    Playlist,
 };
 
-egui_view_group_t page_root;
-GuiEguiView background_view;
-GuiEguiView focus_overlay_view;
-egui_view_button_t control_buttons[CONTROL_COUNT];
-egui_view_list_t track_list;
-
+GuiEguiView view;
 PlayerStatus player_status = {};
-FocusZone focus_zone = FocusZone::TrackList;
-uint8_t selected_control = PLAY_PAUSE_CONTROL;
+MusicSubview subview = MusicSubview::Main;
+bool navigation_active = false;
+uint8_t selected_control = CONTROL_PLAY;
 uint16_t selected_track = 0;
 uint16_t visible_track_start = 0;
-uint16_t rendered_track_count = UINT16_MAX;
-bool view_initialized = false;
-bool focus_pending = false;
-char visible_track_names[VISIBLE_TRACK_ROWS][PLAYER_NAME_LENGTH] = {};
+uint8_t displayed_spectrum[PLAYER_SPECTRUM_BANDS] = {};
+uint32_t last_spectrum_frame_ms = 0;
 
-egui_background_color_param_t row_background_normal = {};
-egui_background_params_t row_background_params = {};
-egui_background_color_t row_background = {};
-
-const egui_font_t *music_text_font() {
+const egui_font_t *music_font() {
     const egui_font_t *font = ui_heiti_font_get(16U);
     return font != nullptr ? font
                            : reinterpret_cast<const egui_font_t *>(EGUI_CONFIG_FONT_DEFAULT);
 }
 
-bool is_active_playback_state(PlayerState state) {
-    return state == PlayerState::Playing || state == PlayerState::Paused;
+void draw_centered_text(egui_canvas_t *canvas, const egui_font_t *font,
+                        const char *text, int16_t x, int16_t y,
+                        int16_t width, int16_t height,
+                        egui_color_t color = EGUI_COLOR_BLACK) {
+    egui_region_t region = {{x, y}, {width, height}};
+    egui_canvas_draw_text_in_rect(canvas, font, text, &region,
+                                  EGUI_ALIGN_CENTER | EGUI_ALIGN_VCENTER,
+                                  color, EGUI_ALPHA_100);
 }
 
-void draw_player_status(egui_canvas_t *canvas) {
-    char buffer[64] = {};
-    const egui_font_t *font = music_text_font();
+void draw_right_text(egui_canvas_t *canvas, const egui_font_t *font,
+                     const char *text, int16_t x, int16_t y,
+                     int16_t width, int16_t height,
+                     egui_color_t color = EGUI_COLOR_BLACK) {
+    egui_region_t region = {{x, y}, {width, height}};
+    egui_canvas_draw_text_in_rect(canvas, font, text, &region,
+                                  EGUI_ALIGN_RIGHT | EGUI_ALIGN_VCENTER,
+                                  color, EGUI_ALPHA_100);
+}
 
-    gui_draw_text(canvas, 8, 27, player_state_name(player_status.state));
+void draw_speaker_icon(egui_canvas_t *canvas, int16_t cx, int16_t cy,
+                       egui_color_t color) {
+    egui_canvas_draw_rectangle_fill(canvas, cx - 9, cy - 4, 5, 8,
+                                    color, EGUI_ALPHA_100);
+    egui_canvas_draw_triangle_fill(canvas, cx - 4, cy - 5, cx + 2, cy - 10,
+                                   cx + 2, cy + 10, color, EGUI_ALPHA_100);
+    if (player_status.volume == 0) {
+        egui_canvas_draw_line(canvas, cx + 5, cy - 5, cx + 12, cy + 5, 2,
+                              color, EGUI_ALPHA_100);
+        egui_canvas_draw_line(canvas, cx + 12, cy - 5, cx + 5, cy + 5, 2,
+                              color, EGUI_ALPHA_100);
+    } else {
+        egui_canvas_draw_line(canvas, cx + 6, cy - 6, cx + 10, cy - 2, 2,
+                              color, EGUI_ALPHA_100);
+        egui_canvas_draw_line(canvas, cx + 10, cy - 2, cx + 10, cy + 2, 2,
+                              color, EGUI_ALPHA_100);
+        egui_canvas_draw_line(canvas, cx + 10, cy + 2, cx + 6, cy + 6, 2,
+                              color, EGUI_ALPHA_100);
+    }
+}
 
-    egui_region_t name_region = {{8, 45}, {PLAYER_PANEL_WIDTH - 16, 18}};
-    egui_canvas_draw_text_in_rect(canvas, font,
-                                  player_status.file_name[0] == '\0'
-                                      ? "--"
-                                      : player_status.file_name,
-                                  &name_region, EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER,
-                                  EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+void draw_repeat_icon(egui_canvas_t *canvas, int16_t cx, int16_t cy,
+                      egui_color_t color) {
+    if (player_status.playback_mode == PlaybackMode::Shuffle) {
+        egui_canvas_draw_line(canvas, cx - 10, cy - 7, cx + 10, cy + 7, 2,
+                              color, EGUI_ALPHA_100);
+        egui_canvas_draw_line(canvas, cx - 10, cy + 7, cx - 3, cy + 2, 2,
+                              color, EGUI_ALPHA_100);
+        egui_canvas_draw_line(canvas, cx - 3, cy + 2, cx + 10, cy - 7, 2,
+                              color, EGUI_ALPHA_100);
+        egui_canvas_draw_triangle_fill(canvas, cx + 10, cy - 7, cx + 5, cy - 8,
+                                       cx + 9, cy - 2, color, EGUI_ALPHA_100);
+        egui_canvas_draw_triangle_fill(canvas, cx + 10, cy + 7, cx + 5, cy + 8,
+                                       cx + 9, cy + 2, color, EGUI_ALPHA_100);
+        return;
+    }
 
-    std::snprintf(buffer, sizeof(buffer), "%u/%u",
-                  player_status.track_count == 0 ? 0 : player_status.track_index + 1,
-                  player_status.track_count);
-    gui_draw_text(canvas, 8, 68, buffer);
+    egui_canvas_draw_line(canvas, cx - 9, cy - 6, cx + 8, cy - 6, 2,
+                          color, EGUI_ALPHA_100);
+    egui_canvas_draw_line(canvas, cx + 9, cy - 5, cx + 9, cy + 2, 2,
+                          color, EGUI_ALPHA_100);
+    egui_canvas_draw_line(canvas, cx + 8, cy + 6, cx - 9, cy + 6, 2,
+                          color, EGUI_ALPHA_100);
+    egui_canvas_draw_line(canvas, cx - 10, cy + 5, cx - 10, cy - 2, 2,
+                          color, EGUI_ALPHA_100);
+    egui_canvas_draw_triangle_fill(canvas, cx + 9, cy + 6, cx + 4, cy + 2,
+                                   cx + 10, cy + 1, color, EGUI_ALPHA_100);
+    egui_canvas_draw_triangle_fill(canvas, cx - 10, cy - 6, cx - 5, cy - 2,
+                                   cx - 11, cy - 1, color, EGUI_ALPHA_100);
+    if (player_status.playback_mode == PlaybackMode::RepeatOne) {
+        egui_canvas_draw_line(canvas, cx, cy - 3, cx, cy + 3, 2,
+                              color, EGUI_ALPHA_100);
+        egui_canvas_draw_line(canvas, cx - 2, cy - 2, cx, cy - 4, 1,
+                              color, EGUI_ALPHA_100);
+    }
+}
+
+void draw_skip_icon(egui_canvas_t *canvas, int16_t cx, int16_t cy,
+                    bool next, egui_color_t color) {
+    if (next) {
+        egui_canvas_draw_triangle_fill(canvas, cx - 8, cy - 9, cx + 6, cy,
+                                       cx - 8, cy + 9, color, EGUI_ALPHA_100);
+        egui_canvas_draw_rectangle_fill(canvas, cx + 7, cy - 10, 3, 20,
+                                        color, EGUI_ALPHA_100);
+    } else {
+        egui_canvas_draw_triangle_fill(canvas, cx + 8, cy - 9, cx - 6, cy,
+                                       cx + 8, cy + 9, color, EGUI_ALPHA_100);
+        egui_canvas_draw_rectangle_fill(canvas, cx - 10, cy - 10, 3, 20,
+                                        color, EGUI_ALPHA_100);
+    }
+}
+
+void draw_play_icon(egui_canvas_t *canvas, int16_t cx, int16_t cy,
+                    egui_color_t color) {
+    if (player_status.state == PlayerState::Playing) {
+        egui_canvas_draw_rectangle_fill(canvas, cx - 7, cy - 10, 5, 20,
+                                        color, EGUI_ALPHA_100);
+        egui_canvas_draw_rectangle_fill(canvas, cx + 3, cy - 10, 5, 20,
+                                        color, EGUI_ALPHA_100);
+    } else {
+        egui_canvas_draw_triangle_fill(canvas, cx - 7, cy - 11, cx + 10, cy,
+                                       cx - 7, cy + 11, color, EGUI_ALPHA_100);
+    }
+}
+
+void draw_playlist_icon(egui_canvas_t *canvas, int16_t cx, int16_t cy,
+                        egui_color_t color) {
+    for (int16_t row = -7; row <= 7; row += 7) {
+        egui_canvas_draw_circle_fill_basic(canvas, cx - 9, cy + row, 2,
+                                           color, EGUI_ALPHA_100);
+        egui_canvas_draw_line(canvas, cx - 4, cy + row, cx + 10, cy + row, 2,
+                              color, EGUI_ALPHA_100);
+    }
+}
+
+void draw_control(egui_canvas_t *canvas, uint8_t index) {
+    const int16_t cx = static_cast<int16_t>(32 + index * 64);
+    constexpr int16_t cy = 148;
+    const bool focused = navigation_active && selected_control == index;
+    const int16_t radius = index == CONTROL_PLAY ? 19 : 16;
+    if (focused) {
+        egui_canvas_draw_circle_fill_basic(canvas, cx, cy, radius,
+                                           EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+    } else {
+        egui_canvas_draw_circle_basic(canvas, cx, cy, radius, 2,
+                                      EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+    }
+    const egui_color_t color = focused ? EGUI_COLOR_WHITE : EGUI_COLOR_BLACK;
+    switch (index) {
+        case CONTROL_VOLUME: draw_speaker_icon(canvas, cx, cy, color); break;
+        case CONTROL_MODE: draw_repeat_icon(canvas, cx, cy, color); break;
+        case CONTROL_PREVIOUS: draw_skip_icon(canvas, cx, cy, false, color); break;
+        case CONTROL_PLAY: draw_play_icon(canvas, cx, cy, color); break;
+        case CONTROL_NEXT: draw_skip_icon(canvas, cx, cy, true, color); break;
+        case CONTROL_PLAYLIST: draw_playlist_icon(canvas, cx, cy, color); break;
+        default: break;
+    }
+}
+
+const char *empty_state_message() {
+    if (player_status.state == PlayerState::NoSd) return "SD CARD NOT FOUND";
+    if (player_status.state == PlayerState::Empty) return "NO MP3 IN /music";
+    if (player_status.error != PlayerError::None) return "PLAYER ERROR";
+    return nullptr;
+}
+
+void draw_main(egui_canvas_t *canvas) {
+    gui_draw_page_background(canvas);
+    const char *title = player_status.file_name[0] == '\0' ? "MUSIC" : player_status.file_name;
+    draw_centered_text(canvas, music_font(), title, 12, 1, 360, 20);
+
+    const char *message = empty_state_message();
+    if (message != nullptr) {
+        draw_centered_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                           message, 12, 42, 360, 22);
+    } else {
+        constexpr int16_t bar_width = 10;
+        constexpr int16_t bar_gap = 5;
+        constexpr int16_t spectrum_bottom = 79;
+        constexpr int16_t spectrum_height = 53;
+        for (size_t index = 0; index < PLAYER_SPECTRUM_BANDS; ++index) {
+            const int16_t height = std::max<int16_t>(2,
+                static_cast<int16_t>((displayed_spectrum[index] * spectrum_height) / 255));
+            const int16_t x = static_cast<int16_t>(14 + index * (bar_width + bar_gap));
+            egui_canvas_draw_rectangle_fill(canvas, x, spectrum_bottom - height,
+                                            bar_width, height,
+                                            EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+        }
+    }
+
+    constexpr int16_t progress_x = 16;
+    constexpr int16_t progress_y = 88;
+    constexpr int16_t progress_width = 352;
+    egui_canvas_draw_round_rectangle(canvas, progress_x, progress_y,
+                                     progress_width, 6, 3, 1,
+                                     EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+    uint32_t progress = 0;
+    if (player_status.duration_seconds > 0) {
+        progress = static_cast<uint32_t>(std::min<uint64_t>(
+            progress_width - 2,
+            (static_cast<uint64_t>(player_status.elapsed_seconds) *
+             (progress_width - 2)) / player_status.duration_seconds));
+    }
+    if (progress > 0) {
+        egui_canvas_draw_round_rectangle_fill(canvas, progress_x + 1, progress_y + 1,
+                                              static_cast<int16_t>(progress), 4, 2,
+                                              EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+    }
+    const int16_t thumb_x = static_cast<int16_t>(progress_x + 1 + progress);
+    egui_canvas_draw_circle_fill_basic(canvas, thumb_x, progress_y + 3, 4,
+                                       EGUI_COLOR_BLACK, EGUI_ALPHA_100);
 
     char elapsed[12] = {};
     char duration[12] = {};
     gui_format_time(player_status.elapsed_seconds, elapsed, sizeof(elapsed));
     gui_format_time(player_status.duration_seconds, duration, sizeof(duration));
-    std::snprintf(buffer, sizeof(buffer), "%s / %s", elapsed, duration);
-    gui_draw_text(canvas, 8, 86, buffer);
+    egui_region_t elapsed_region = {{16, 98}, {100, 18}};
+    egui_canvas_draw_text_in_rect(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                                  elapsed, &elapsed_region,
+                                  EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER,
+                                  EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+    draw_right_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                    duration, 268, 98, 100, 18);
 
-    constexpr uint32_t progress_width = PLAYER_PANEL_WIDTH - 20;
-    egui_canvas_draw_rectangle(canvas, 8, 105, progress_width + 4, 9, 1,
-                               EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-    uint32_t progress = 0;
-    if (player_status.duration_seconds > 0) {
-        progress = static_cast<uint32_t>(std::min<uint64_t>(
-            progress_width,
-            (static_cast<uint64_t>(player_status.elapsed_seconds) * progress_width) /
-                player_status.duration_seconds));
+    for (uint8_t index = 0; index < CONTROL_COUNT; ++index) {
+        draw_control(canvas, index);
     }
-    if (progress > 0) {
-        egui_canvas_draw_rectangle_fill(canvas, 10, 107,
-                                        static_cast<int16_t>(progress), 5,
-                                        EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-    }
-
-    if (player_status.error == PlayerError::None) {
-        std::snprintf(buffer, sizeof(buffer), "VOL %u/%u",
-                      player_status.volume, PLAYER_VOLUME_MAX);
-    } else {
-        std::snprintf(buffer, sizeof(buffer), "ERR %s",
-                      player_error_name(player_status.error));
-    }
-    egui_region_t status_region = {{8, 117}, {PLAYER_PANEL_WIDTH - 16, 18}};
-    egui_canvas_draw_text_in_rect(
-        canvas, reinterpret_cast<const egui_font_t *>(EGUI_CONFIG_FONT_DEFAULT),
-        buffer, &status_region, EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER,
-        EGUI_COLOR_BLACK, EGUI_ALPHA_100);
 }
 
-void draw_background(egui_canvas_t *canvas) {
+void draw_volume(egui_canvas_t *canvas) {
     gui_draw_page_background(canvas);
-    gui_draw_header(canvas, "MUSIC");
+    gui_draw_header(canvas, "VOLUME");
+    draw_speaker_icon(canvas, 64, 68, EGUI_COLOR_BLACK);
 
-    char count_text[24] = {};
-    std::snprintf(count_text, sizeof(count_text), "TRACKS %u",
-                  player_status.track_count);
-    gui_draw_text(canvas, 286, 4, count_text);
+    char value[24] = {};
+    std::snprintf(value, sizeof(value), "%u / %u",
+                  player_status.volume, PLAYER_VOLUME_MAX);
+    draw_centered_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_30_4),
+                       value, 100, 42, 230, 50);
 
-    egui_canvas_draw_line(canvas, PLAYER_PANEL_WIDTH, 22, PLAYER_PANEL_WIDTH,
-                          EGUI_CONFIG_SCREEN_HEIGHT - 1, 1,
-                          EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-    draw_player_status(canvas);
+    constexpr int16_t bar_x = 48;
+    constexpr int16_t bar_y = 111;
+    constexpr int16_t bar_width = 288;
+    egui_canvas_draw_round_rectangle(canvas, bar_x, bar_y, bar_width, 14, 4, 2,
+                                     EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+    const int16_t fill_width = static_cast<int16_t>(
+        (static_cast<uint32_t>(player_status.volume) * (bar_width - 4)) /
+        PLAYER_VOLUME_MAX);
+    if (fill_width > 0) {
+        egui_canvas_draw_round_rectangle_fill(canvas, bar_x + 2, bar_y + 2,
+                                              fill_width, 10, 3,
+                                              EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+    }
+    gui_draw_text(canvas, bar_x, 137, "MIN");
+    draw_right_text(canvas, reinterpret_cast<const egui_font_t *>(EGUI_CONFIG_FONT_DEFAULT),
+                    "MAX", bar_x, 134, bar_width, 20);
+}
 
+void clamp_playlist_window() {
     if (player_status.track_count == 0) {
-        const char *message = player_status.state == PlayerState::NoSd
-                                  ? "SD CARD NOT FOUND"
-                                  : "NO MP3 IN /music";
-        gui_draw_text(canvas, TRACK_LIST_X + 10, 70, message);
-    }
-}
-
-void draw_focus_overlay(egui_canvas_t *canvas) {
-    egui_view_t *focused = nullptr;
-    if (focus_zone == FocusZone::Player) {
-        focused = EGUI_VIEW_OF(&control_buttons[selected_control]);
-    } else if (player_status.track_count > 0 &&
-               selected_track >= visible_track_start) {
-        const uint16_t row = selected_track - visible_track_start;
-        if (row < egui_view_list_get_item_count(EGUI_VIEW_OF(&track_list))) {
-            focused = EGUI_VIEW_OF(&track_list.items[row]);
-        }
-    }
-
-    if (focused == nullptr || focused->region_screen.size.width <= 0 ||
-        focused->region_screen.size.height <= 0) {
-        return;
-    }
-
-    const egui_region_t &region = focused->region_screen;
-    const int16_t inset = focus_zone == FocusZone::Player ? 2 : 1;
-    egui_canvas_draw_rectangle(canvas,
-                               region.location.x - inset,
-                               region.location.y - inset,
-                               region.size.width + inset * 2,
-                               region.size.height + inset * 2,
-                               2, EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-}
-
-void update_play_pause_icon() {
-    if (!view_initialized) {
-        return;
-    }
-    egui_view_button_set_icon(
-        EGUI_VIEW_OF(&control_buttons[PLAY_PAUSE_CONTROL]),
-        player_status.state == PlayerState::Playing
-            ? EGUI_ICON_MS_PAUSE
-            : EGUI_ICON_MS_PLAY_ARROW);
-}
-
-void clamp_track_window() {
-    const uint16_t count = player_status.track_count;
-    if (count == 0) {
         selected_track = 0;
         visible_track_start = 0;
         return;
     }
-
-    if (selected_track >= count) {
-        selected_track = count - 1;
-    }
+    selected_track = std::min<uint16_t>(selected_track, player_status.track_count - 1);
     if (selected_track < visible_track_start) {
         visible_track_start = selected_track;
-    } else if (selected_track >= visible_track_start + VISIBLE_TRACK_ROWS) {
-        visible_track_start = selected_track - VISIBLE_TRACK_ROWS + 1;
+    } else if (selected_track >= visible_track_start + PLAYLIST_ROWS) {
+        visible_track_start = selected_track - PLAYLIST_ROWS + 1;
     }
-
-    const uint16_t max_start = count > VISIBLE_TRACK_ROWS
-                                   ? count - VISIBLE_TRACK_ROWS
+    const uint16_t max_start = player_status.track_count > PLAYLIST_ROWS
+                                   ? player_status.track_count - PLAYLIST_ROWS
                                    : 0;
-    visible_track_start = std::min(visible_track_start, max_start);
+    visible_track_start = std::min<uint16_t>(visible_track_start, max_start);
 }
 
-void rebuild_track_window() {
-    if (!view_initialized) {
-        return;
-    }
+void draw_playlist(egui_canvas_t *canvas) {
+    gui_draw_page_background(canvas);
+    gui_draw_header(canvas, "PLAYLIST");
+    char count[24] = {};
+    std::snprintf(count, sizeof(count), "%u/%u",
+                  player_status.track_count == 0 ? 0 : selected_track + 1,
+                  player_status.track_count);
+    draw_right_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                    count, 280, 1, 94, 20);
 
-    clamp_track_window();
-    egui_view_list_clear(EGUI_VIEW_OF(&track_list));
-    std::memset(visible_track_names, 0, sizeof(visible_track_names));
-
-    const egui_font_t *font = music_text_font();
-    const bool show_active_track = is_active_playback_state(player_status.state);
-    for (uint16_t row = 0; row < VISIBLE_TRACK_ROWS; ++row) {
-        const uint16_t track_index = visible_track_start + row;
-        if (track_index >= player_status.track_count) {
-            break;
-        }
-
-        (void)music_library_get(track_index, nullptr, 0,
-                                visible_track_names[row],
-                                sizeof(visible_track_names[row]));
-        const char *icon = show_active_track &&
-                                   track_index == player_status.track_index
-                               ? EGUI_ICON_MS_MUSIC_NOTE
-                               : nullptr;
-        const int8_t added = egui_view_list_add_item_with_icon(
-            EGUI_VIEW_OF(&track_list), icon, visible_track_names[row]);
-        if (added < 0) {
-            break;
-        }
-
-        egui_view_t *item = EGUI_VIEW_OF(&track_list.items[added]);
-        egui_view_set_background(item, EGUI_BG_OF(&row_background));
-        egui_view_label_set_font(item, font);
-        egui_view_label_set_font_color(item, EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-    }
-
-    if (player_status.track_count > 0) {
-        egui_view_list_set_selected_index(
-            EGUI_VIEW_OF(&track_list),
-            static_cast<uint8_t>(selected_track - visible_track_start));
-    }
-    rendered_track_count = player_status.track_count;
-    egui_view_invalidate(EGUI_VIEW_OF(&focus_overlay_view));
-}
-
-void sync_track_selection() {
-    const uint16_t old_start = visible_track_start;
-    clamp_track_window();
-    if (old_start != visible_track_start ||
-        rendered_track_count != player_status.track_count) {
-        rebuild_track_window();
-        return;
-    }
-    if (player_status.track_count > 0) {
-        egui_view_list_set_selected_index(
-            EGUI_VIEW_OF(&track_list),
-            static_cast<uint8_t>(selected_track - visible_track_start));
-    }
-    egui_view_invalidate(EGUI_VIEW_OF(&focus_overlay_view));
-}
-
-void request_zone_focus() {
-    if (!view_initialized) {
-        return;
-    }
-    if (focus_zone == FocusZone::Player) {
-        egui_view_request_focus(EGUI_VIEW_OF(&control_buttons[selected_control]));
-    } else {
-        egui_view_request_focus(EGUI_VIEW_OF(&track_list));
-    }
-    egui_view_invalidate(EGUI_VIEW_OF(&focus_overlay_view));
-}
-
-void move_player_control(int direction) {
-    const int next = (static_cast<int>(selected_control) + CONTROL_COUNT + direction) %
-                     CONTROL_COUNT;
-    selected_control = static_cast<uint8_t>(next);
-    request_zone_focus();
-}
-
-void move_track_selection(int direction) {
-    const uint16_t count = player_status.track_count;
-    if (count == 0) {
-        return;
-    }
-    if (direction < 0) {
-        selected_track = selected_track == 0 ? count - 1 : selected_track - 1;
-    } else {
-        selected_track = selected_track + 1 >= count ? 0 : selected_track + 1;
-    }
-    sync_track_selection();
-}
-
-void execute_player_control() {
     if (player_status.track_count == 0) {
+        draw_centered_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                           empty_state_message() == nullptr ? "NO TRACKS" : empty_state_message(),
+                           12, 62, 360, 28);
         return;
     }
-    switch (selected_control) {
-        case 0:
-            (void)task_post_player_command(PlayerCommandType::Previous);
-            break;
-        case PLAY_PAUSE_CONTROL:
-            (void)task_post_player_command(PlayerCommandType::Toggle);
-            break;
-        case 2:
-            (void)task_post_player_command(PlayerCommandType::Next);
-            break;
-        default:
-            break;
+
+    for (uint8_t row = 0; row < PLAYLIST_ROWS; ++row) {
+        const uint16_t index = visible_track_start + row;
+        if (index >= player_status.track_count) break;
+        const int16_t y = static_cast<int16_t>(24 + row * 20);
+        const bool focused = index == selected_track;
+        if (focused) {
+            egui_canvas_draw_rectangle_fill(canvas, 4, y, 376, 19,
+                                            EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+        }
+        const egui_color_t color = focused ? EGUI_COLOR_WHITE : EGUI_COLOR_BLACK;
+        if (index == player_status.track_index &&
+            (player_status.state == PlayerState::Playing ||
+             player_status.state == PlayerState::Paused)) {
+            egui_canvas_draw_triangle_fill(canvas, 10, y + 4, 18, y + 9,
+                                           10, y + 14, color, EGUI_ALPHA_100);
+        }
+        char name[PLAYER_NAME_LENGTH] = {};
+        (void)music_library_get(index, nullptr, 0, name, sizeof(name));
+        egui_region_t name_region = {{24, y}, {350, 19}};
+        egui_canvas_draw_text_in_rect(canvas, music_font(), name, &name_region,
+                                      EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER,
+                                      color, EGUI_ALPHA_100);
     }
 }
 
-void init_control_button(uint8_t index, const char *icon) {
-    egui_view_t *button = EGUI_VIEW_OF(&control_buttons[index]);
-    egui_view_button_init(button, egui_port_core());
-    egui_view_set_position(button,
-                           CONTROL_X + index * (CONTROL_WIDTH + CONTROL_GAP),
-                           CONTROL_Y);
-    egui_view_set_size(button, CONTROL_WIDTH, CONTROL_HEIGHT);
-    egui_view_label_set_text(button, nullptr);
-    egui_view_label_set_font_color(button, EGUI_COLOR_WHITE, EGUI_ALPHA_100);
-    egui_view_button_set_icon(button, icon);
-    egui_view_button_set_icon_font(button, EGUI_FONT_ICON_MS_20);
-    egui_view_set_focus_frame_style(button, 2, 1,
-                                    EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-    egui_view_group_add_child(EGUI_VIEW_OF(&page_root), button);
+void draw(egui_canvas_t *canvas) {
+    switch (subview) {
+        case MusicSubview::Main: draw_main(canvas); break;
+        case MusicSubview::Volume: draw_volume(canvas); break;
+        case MusicSubview::Playlist: draw_playlist(canvas); break;
+    }
 }
 
 void init() {
@@ -335,81 +354,109 @@ void init() {
         std::memset(&player_status, 0, sizeof(player_status));
         player_status.state = PlayerState::Initializing;
         player_status.volume = PLAYER_DEFAULT_VOLUME;
+        player_status.playback_mode = PlaybackMode::RepeatAll;
     }
-
-    egui_view_group_init(EGUI_VIEW_OF(&page_root), egui_port_core());
-    egui_view_set_size(EGUI_VIEW_OF(&page_root),
-                       EGUI_CONFIG_SCREEN_WIDTH, EGUI_CONFIG_SCREEN_HEIGHT);
-
-    row_background_normal.type = EGUI_BACKGROUND_COLOR_TYPE_SOLID;
-    row_background_normal.alpha = EGUI_ALPHA_100;
-    row_background_normal.color = EGUI_COLOR_WHITE;
-    row_background_params.normal_param = &row_background_normal;
-    row_background_params.pressed_param = &row_background_normal;
-    row_background_params.disabled_param = &row_background_normal;
-    row_background_params.focused_param = &row_background_normal;
-    egui_background_color_init(EGUI_BG_OF(&row_background));
-    egui_background_set_params(EGUI_BG_OF(&row_background),
-                               &row_background_params);
-
-    gui_egui_view_init(&background_view, egui_port_core(), draw_background);
-    egui_view_group_add_child(EGUI_VIEW_OF(&page_root),
-                              EGUI_VIEW_OF(&background_view));
-
-    EGUI_VIEW_LIST_PARAMS_INIT(list_params, TRACK_LIST_X, TRACK_LIST_Y,
-                               TRACK_LIST_WIDTH, TRACK_LIST_HEIGHT,
-                               TRACK_ROW_HEIGHT);
-    egui_view_list_init_with_params(EGUI_VIEW_OF(&track_list),
-                                    egui_port_core(), &list_params);
-    egui_view_list_set_icon_font(EGUI_VIEW_OF(&track_list), EGUI_FONT_ICON_MS_16);
-    egui_view_list_set_icon_color(EGUI_VIEW_OF(&track_list), EGUI_COLOR_BLACK);
-    egui_view_set_focus_frame_style(EGUI_VIEW_OF(&track_list), 0, 1,
-                                    EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-    egui_view_group_add_child(EGUI_VIEW_OF(&page_root), EGUI_VIEW_OF(&track_list));
-
-    init_control_button(0, EGUI_ICON_MS_ARROW_BACK);
-    init_control_button(PLAY_PAUSE_CONTROL, EGUI_ICON_MS_PLAY_ARROW);
-    init_control_button(2, EGUI_ICON_MS_ARROW_FORWARD);
-
-    gui_egui_view_init(&focus_overlay_view, egui_port_core(), draw_focus_overlay);
-    egui_view_group_add_child(EGUI_VIEW_OF(&page_root),
-                              EGUI_VIEW_OF(&focus_overlay_view));
-
-    view_initialized = true;
-    clamp_track_window();
-    rebuild_track_window();
-    update_play_pause_icon();
+    gui_egui_view_init(&view, egui_port_core(), draw);
 }
 
 void enter() {
-    focus_zone = FocusZone::TrackList;
-    focus_pending = true;
+    navigation_active = false;
+    subview = MusicSubview::Main;
+    selected_control = CONTROL_PLAY;
+    selected_track = player_status.track_count == 0 ? 0 : player_status.track_index;
+    visible_track_start = 0;
+    clamp_playlist_window();
+    std::memcpy(displayed_spectrum, player_status.spectrum,
+                sizeof(displayed_spectrum));
+    last_spectrum_frame_ms = millis();
 }
 
 void exit() {
-    focus_pending = false;
-    egui_view_clear_focus(EGUI_VIEW_OF(&page_root));
+    navigation_active = false;
+    subview = MusicSubview::Main;
+}
+
+void navigation_changed(bool active) {
+    navigation_active = active;
+    if (!active) {
+        subview = MusicSubview::Main;
+        selected_control = CONTROL_PLAY;
+    }
+}
+
+void move_playlist(int direction) {
+    if (player_status.track_count == 0) return;
+    if (direction < 0) {
+        selected_track = selected_track == 0
+                             ? player_status.track_count - 1
+                             : selected_track - 1;
+    } else {
+        selected_track = selected_track + 1 >= player_status.track_count
+                             ? 0
+                             : selected_track + 1;
+    }
+    clamp_playlist_window();
+}
+
+void execute_control() {
+    switch (selected_control) {
+        case CONTROL_VOLUME:
+            subview = MusicSubview::Volume;
+            break;
+        case CONTROL_MODE:
+            (void)task_post_player_command(PlayerCommandType::CyclePlaybackMode);
+            break;
+        case CONTROL_PREVIOUS:
+            if (player_status.track_count > 0) {
+                (void)task_post_player_command(PlayerCommandType::Previous);
+            }
+            break;
+        case CONTROL_PLAY:
+            if (player_status.track_count > 0) {
+                (void)task_post_player_command(PlayerCommandType::Toggle);
+            }
+            break;
+        case CONTROL_NEXT:
+            if (player_status.track_count > 0) {
+                (void)task_post_player_command(PlayerCommandType::Next);
+            }
+            break;
+        case CONTROL_PLAYLIST:
+            selected_track = player_status.track_count == 0
+                                 ? 0
+                                 : player_status.track_index;
+            visible_track_start = 0;
+            clamp_playlist_window();
+            subview = MusicSubview::Playlist;
+            break;
+        default:
+            break;
+    }
 }
 
 bool key_consume(const KeyEvent &event) {
-    if (event.id == KeyId::Middle && event.gesture == KeyGesture::LongPress) {
-        focus_zone = focus_zone == FocusZone::TrackList
-                         ? FocusZone::Player
-                         : FocusZone::TrackList;
-        focus_pending = true;
+    if (event.id == KeyId::Middle && event.gesture == KeyGesture::LongPress &&
+        subview != MusicSubview::Main) {
+        selected_control = subview == MusicSubview::Volume
+                               ? CONTROL_VOLUME
+                               : CONTROL_PLAYLIST;
+        subview = MusicSubview::Main;
         return true;
     }
-
     if (event.gesture != KeyGesture::Click) {
         return false;
     }
 
     if (event.id == KeyId::Left || event.id == KeyId::Right) {
         const int direction = event.id == KeyId::Left ? -1 : 1;
-        if (focus_zone == FocusZone::Player) {
-            move_player_control(direction);
+        if (subview == MusicSubview::Main) {
+            selected_control = static_cast<uint8_t>(
+                (selected_control + CONTROL_COUNT + direction) % CONTROL_COUNT);
+        } else if (subview == MusicSubview::Volume) {
+            (void)task_post_player_command(PlayerCommandType::ChangeVolume,
+                                           static_cast<int16_t>(direction));
         } else {
-            move_track_selection(direction);
+            move_playlist(direction);
         }
         return true;
     }
@@ -417,9 +464,9 @@ bool key_consume(const KeyEvent &event) {
     if (event.id != KeyId::Middle) {
         return false;
     }
-    if (focus_zone == FocusZone::Player) {
-        execute_player_control();
-    } else if (player_status.track_count > 0) {
+    if (subview == MusicSubview::Main) {
+        execute_control();
+    } else if (subview == MusicSubview::Playlist && player_status.track_count > 0) {
         (void)task_post_player_command(PlayerCommandType::PlaySelected,
                                        static_cast<int16_t>(selected_track));
     }
@@ -427,45 +474,41 @@ bool key_consume(const KeyEvent &event) {
 }
 
 bool service() {
-    if (!focus_pending) {
+    const uint32_t now = millis();
+    if (now - last_spectrum_frame_ms < SPECTRUM_FRAME_MS) {
         return false;
     }
-    focus_pending = false;
-    request_zone_focus();
-    return true;
+    last_spectrum_frame_ms = now;
+    bool changed = false;
+    for (size_t index = 0; index < PLAYER_SPECTRUM_BANDS; ++index) {
+        const uint8_t target = player_status.state == PlayerState::Playing
+                                   ? player_status.spectrum[index]
+                                   : 0;
+        const uint8_t old_value = displayed_spectrum[index];
+        if (old_value < target) {
+            displayed_spectrum[index] = target;
+        } else if (old_value > target) {
+            displayed_spectrum[index] = old_value > 24
+                                            ? old_value - 24
+                                            : 0;
+        }
+        changed = changed || displayed_spectrum[index] != old_value;
+    }
+    return changed && subview == MusicSubview::Main;
 }
 
 bool update_status(const PlayerStatus &status) {
     if (status.version == player_status.version) {
         return false;
     }
-
-    const uint16_t old_track_count = player_status.track_count;
-    const uint16_t old_active_track = is_active_playback_state(player_status.state)
-                                          ? player_status.track_index
-                                          : UINT16_MAX;
-    const PlayerState old_state = player_status.state;
     player_status = status;
-    clamp_track_window();
-
-    if (view_initialized) {
-        const uint16_t new_active_track = is_active_playback_state(player_status.state)
-                                              ? player_status.track_index
-                                              : UINT16_MAX;
-        if (old_track_count != player_status.track_count ||
-            old_active_track != new_active_track) {
-            rebuild_track_window();
-        }
-        if (old_state != player_status.state) {
-            update_play_pause_icon();
-        }
-    }
+    clamp_playlist_window();
     return true;
 }
 
 GuiPageDescriptor descriptor = {
     UiPage::Music, init, enter, exit, key_consume, service, update_status,
-    EGUI_VIEW_OF(&page_root), "music", true, false,
+    EGUI_VIEW_OF(&view), "music", true, false, navigation_changed,
 };
 }
 

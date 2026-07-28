@@ -16,6 +16,7 @@ GuiPageDescriptor *current_page = nullptr;
 UiPage history[HISTORY_DEPTH] = {};
 size_t history_size = 0;
 bool dirty = true;
+bool internal_navigation = false;
 
 GuiPageDescriptor *find_page(UiPage id) {
     for (size_t index = 0; index < page_count; ++index) {
@@ -78,6 +79,11 @@ bool switch_page(GuiPageDescriptor *target, bool record_history) {
         push_history(current_page->id);
     }
 
+    if ((current_page != nullptr) && internal_navigation &&
+        (current_page->navigation_changed != nullptr)) {
+        current_page->navigation_changed(false);
+    }
+    internal_navigation = false;
     if ((current_page != nullptr) && (current_page->exit != nullptr)) {
         current_page->exit();
     }
@@ -90,6 +96,9 @@ bool switch_page(GuiPageDescriptor *target, bool record_history) {
     }
     if (current_page->enter != nullptr) {
         current_page->enter();
+    }
+    if (current_page->navigation_changed != nullptr) {
+        current_page->navigation_changed(false);
     }
     egui_view_set_visible(current_page->view, 1);
     egui_view_invalidate_full(current_page->view);
@@ -145,6 +154,7 @@ void gui_page_manager_init() {
     page_count = 0;
     history_size = 0;
     current_page = nullptr;
+    internal_navigation = false;
     dirty = true;
 }
 
@@ -216,23 +226,35 @@ void gui_page_handle_key(const KeyEvent &event) {
         return;
     }
 
-    if ((current_page->key_consume != nullptr) && current_page->key_consume(event)) {
-        dirty = true;
+    if (!internal_navigation) {
+        if (event.gesture != KeyGesture::Click) {
+            return;
+        }
+        if (event.id == KeyId::Middle) {
+            internal_navigation = true;
+            if (current_page->navigation_changed != nullptr) {
+                current_page->navigation_changed(true);
+            }
+            dirty = true;
+        } else if (event.id == KeyId::Left) {
+            gui_page_previous();
+        } else if (event.id == KeyId::Right) {
+            gui_page_next();
+        }
         return;
     }
 
     if ((event.id == KeyId::Right) && (event.gesture == KeyGesture::LongPress)) {
-        gui_page_back();
+        internal_navigation = false;
+        if (current_page->navigation_changed != nullptr) {
+            current_page->navigation_changed(false);
+        }
+        dirty = true;
         return;
     }
 
-    if (event.gesture != KeyGesture::Click) {
-        return;
-    }
-    if (event.id == KeyId::Left) {
-        gui_page_previous();
-    } else if (event.id == KeyId::Right) {
-        gui_page_next();
+    if ((current_page->key_consume != nullptr) && current_page->key_consume(event)) {
+        dirty = true;
     }
 }
 

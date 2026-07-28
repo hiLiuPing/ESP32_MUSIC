@@ -41,10 +41,16 @@ rescan
 status
 ```
 
-On the music page, left and right move within the focused player or track-list
-area, and the middle key activates the selected control or track. Hold the
-middle key to switch between the two areas. Hold the right key to return to the
-previous page. Playback continues after leaving the music page.
+Physical keys use two navigation levels. After switching pages with left and
+right, click the middle key to enter that page's controls. While inside a page,
+hold the right key to return to page switching; the same press is not forwarded
+to the page. Playback continues after leaving the music page.
+
+On the music page, left and right move across volume, playback mode, previous,
+play/pause, next and playlist. The middle key activates the selected control.
+Volume and playlist open full-screen subviews; hold the middle key to return to
+the control row. Playback mode cycles through repeat-all, repeat-one and a
+shuffle queue that supports moving backward through recently played entries.
 
 ## Build
 

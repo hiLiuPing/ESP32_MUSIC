@@ -2480,6 +2480,7 @@ void page_exit() { ui_HomePage_screen_destroy(); }
 bool page_key_consume(const KeyEvent &event) { return ui_HomePage_key_consume(event); }
 bool page_service() { return false; }
 bool page_update_status(const PlayerStatus &) { return false; }
+void page_navigation_changed(bool) {}
 
 struct HomePageDescriptorInitializer {
     HomePageDescriptorInitializer() {
@@ -2489,6 +2490,7 @@ struct HomePageDescriptorInitializer {
         descriptor.key_consume = page_key_consume;
         descriptor.service = page_service;
         descriptor.update_status = page_update_status;
+        descriptor.navigation_changed = page_navigation_changed;
     }
 } descriptor_initializer;
 }

@@ -14,6 +14,7 @@ GuiEguiView view;
 WeatherForecastDay days[APP_WEATHER_FORECAST_DAYS] = {};
 uint32_t forecast_version = 0U;
 uint8_t selected = 0U;
+bool navigation_active = false;
 
 const char *weekday_name(const WeatherForecastDay &day) {
     static constexpr const char *names[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
@@ -35,7 +36,7 @@ void draw(egui_canvas_t *canvas) {
                           EGUI_COLOR_BLACK, EGUI_ALPHA_100);
     for (uint8_t i = 0U; i < APP_WEATHER_FORECAST_DAYS; ++i) {
         const int16_t x = static_cast<int16_t>(4 + i * 54);
-        const bool active = i == selected;
+        const bool active = navigation_active && i == selected;
         if (active) egui_canvas_draw_rectangle_fill(canvas, x, 46, 50, 108, EGUI_COLOR_BLACK, EGUI_ALPHA_100);
         const egui_color_t color = active ? EGUI_COLOR_WHITE : EGUI_COLOR_BLACK;
         char date[16] = {};
@@ -63,8 +64,9 @@ void init() {
     gui_egui_view_init(&view, egui_port_core(), draw);
     app_data_get_weather_forecast(days, APP_WEATHER_FORECAST_DAYS, &forecast_version);
 }
-void enter() { app_data_get_weather_forecast(days, APP_WEATHER_FORECAST_DAYS, &forecast_version); }
+void enter() { navigation_active = false; app_data_get_weather_forecast(days, APP_WEATHER_FORECAST_DAYS, &forecast_version); }
 void exit() {}
+void navigation_changed(bool active) { navigation_active = active; }
 bool key_consume(const KeyEvent &event) {
     if (event.id == KeyId::Middle && event.gesture == KeyGesture::Click) {
         selected = static_cast<uint8_t>((selected + 1U) % APP_WEATHER_FORECAST_DAYS);
@@ -81,7 +83,7 @@ bool service() {
     return true;
 }
 bool update_status(const PlayerStatus &) { return false; }
-GuiPageDescriptor descriptor = {UiPage::Weather, init, enter, exit, key_consume, service, update_status, EGUI_VIEW_OF(&view), "weather", true, false};
+GuiPageDescriptor descriptor = {UiPage::Weather, init, enter, exit, key_consume, service, update_status, EGUI_VIEW_OF(&view), "weather", true, false, navigation_changed};
 }
 
 GuiPageDescriptor &ui_weather_page_descriptor() { return descriptor; }

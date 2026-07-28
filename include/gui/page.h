@@ -28,4 +28,5 @@ struct GuiPageDescriptor {
     const char *name;
     bool nav_enabled;
     bool initialized;
+    void (*navigation_changed)(bool active);
 };

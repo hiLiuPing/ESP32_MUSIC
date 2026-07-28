@@ -8,12 +8,44 @@
 #include <new>
 #include <freertos/semphr.h>
 
+#ifndef BSP_LITTLEFS_DEBUG_MODE
+#define BSP_LITTLEFS_DEBUG_MODE 0
+#endif
+
 namespace {
 bool mounted = false;
 SemaphoreHandle_t fs_mutex = nullptr;
 
 constexpr size_t kCopyBufferSize = 4096U;
 constexpr size_t kYieldIntervalBytes = 64U * 1024U;
+
+bool init_littlefs() {
+    if (LittleFS.begin(false)) {
+        Serial.println("[LittleFS] initial mount successful");
+        return true;
+    }
+
+    Serial.println("[LittleFS] initial mount failed");
+#if BSP_LITTLEFS_DEBUG_MODE
+    Serial.println("[LittleFS] debug recovery: formatting filesystem");
+    if (!LittleFS.format()) {
+        Serial.println("[LittleFS] debug recovery: format failed");
+        return false;
+    }
+
+    Serial.println("[LittleFS] debug recovery: format successful, remounting");
+    if (!LittleFS.begin(false)) {
+        Serial.println("[LittleFS] debug recovery: remount failed");
+        return false;
+    }
+
+    Serial.println("[LittleFS] debug recovery: remount successful");
+    return true;
+#else
+    Serial.println("[LittleFS] debug recovery disabled");
+    return false;
+#endif
+}
 
 struct SyncStats {
     uint32_t copied = 0U;
@@ -284,10 +316,7 @@ bool bsp_littlefs_init() {
         Serial.println("[LittleFS] lock failed");
         return false;
     }
-    bool mount_ok = LittleFS.begin(false);
-    if (!mount_ok) {
-        Serial.println("[LittleFS] mount failed");
-    }
+    const bool mount_ok = init_littlefs();
     if (mount_ok) {
         const double size_mb = static_cast<double>(LittleFS.totalBytes()) / (1024.0 * 1024.0);
         Serial.printf("[LittleFS] size=%.2f MB\n", size_mb);
