@@ -20,6 +20,14 @@ constexpr uint8_t CONTROL_NEXT = 4;
 constexpr uint8_t CONTROL_PLAYLIST = 5;
 constexpr uint8_t PLAYLIST_ROWS = 7;
 constexpr uint32_t SPECTRUM_FRAME_MS = 80;
+constexpr uint8_t SPECTRUM_PEAK_HOLD_FRAMES = 2;
+constexpr int16_t SPECTRUM_BAR_WIDTH = 10;
+constexpr int16_t SPECTRUM_BAR_GAP = 5;
+constexpr int16_t SPECTRUM_BOTTOM = 86;
+constexpr int16_t SPECTRUM_HEIGHT = 61;
+constexpr int16_t SPECTRUM_PEAK_HEIGHT = 2;
+constexpr int16_t PROGRESS_Y = 95;
+constexpr int16_t TIME_Y = 105;
 
 enum class MusicSubview : uint8_t {
     Main,
@@ -35,7 +43,15 @@ uint8_t selected_control = CONTROL_PLAY;
 uint16_t selected_track = 0;
 uint16_t visible_track_start = 0;
 uint8_t displayed_spectrum[PLAYER_SPECTRUM_BANDS] = {};
+uint8_t spectrum_peaks[PLAYER_SPECTRUM_BANDS] = {};
+uint8_t spectrum_peak_ticks[PLAYER_SPECTRUM_BANDS] = {};
 uint32_t last_spectrum_frame_ms = 0;
+
+uint8_t spectrum_pixel_height(uint8_t level) {
+    if (level == 0) return 0;
+    return static_cast<uint8_t>(std::max<int16_t>(
+        2, static_cast<int16_t>((level * SPECTRUM_HEIGHT) / 255)));
+}
 
 const egui_font_t *music_font() {
     const egui_font_t *font = ui_heiti_font_get(16U);
@@ -197,26 +213,29 @@ void draw_main(egui_canvas_t *canvas) {
     const char *message = empty_state_message();
     if (message != nullptr) {
         draw_centered_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
-                           message, 12, 42, 360, 22);
+                           message, 12, 49, 360, 22);
     } else {
-        constexpr int16_t bar_width = 10;
-        constexpr int16_t bar_gap = 5;
-        constexpr int16_t spectrum_bottom = 79;
-        constexpr int16_t spectrum_height = 53;
         for (size_t index = 0; index < PLAYER_SPECTRUM_BANDS; ++index) {
-            const int16_t height = std::max<int16_t>(2,
-                static_cast<int16_t>((displayed_spectrum[index] * spectrum_height) / 255));
-            const int16_t x = static_cast<int16_t>(14 + index * (bar_width + bar_gap));
-            egui_canvas_draw_rectangle_fill(canvas, x, spectrum_bottom - height,
-                                            bar_width, height,
-                                            EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+            const int16_t height = spectrum_pixel_height(displayed_spectrum[index]);
+            const int16_t x = static_cast<int16_t>(
+                14 + index * (SPECTRUM_BAR_WIDTH + SPECTRUM_BAR_GAP));
+            if (height > 0) {
+                egui_canvas_draw_rectangle_fill(canvas, x, SPECTRUM_BOTTOM - height,
+                                                SPECTRUM_BAR_WIDTH, height,
+                                                EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+            }
+            if (spectrum_peaks[index] > 0) {
+                egui_canvas_draw_rectangle_fill(
+                    canvas, x, SPECTRUM_BOTTOM - spectrum_peaks[index],
+                    SPECTRUM_BAR_WIDTH, SPECTRUM_PEAK_HEIGHT,
+                    EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+            }
         }
     }
 
     constexpr int16_t progress_x = 16;
-    constexpr int16_t progress_y = 88;
     constexpr int16_t progress_width = 352;
-    egui_canvas_draw_round_rectangle(canvas, progress_x, progress_y,
+    egui_canvas_draw_round_rectangle(canvas, progress_x, PROGRESS_Y,
                                      progress_width, 6, 3, 1,
                                      EGUI_COLOR_BLACK, EGUI_ALPHA_100);
     uint32_t progress = 0;
@@ -227,25 +246,25 @@ void draw_main(egui_canvas_t *canvas) {
              (progress_width - 2)) / player_status.duration_seconds));
     }
     if (progress > 0) {
-        egui_canvas_draw_round_rectangle_fill(canvas, progress_x + 1, progress_y + 1,
+        egui_canvas_draw_round_rectangle_fill(canvas, progress_x + 1, PROGRESS_Y + 1,
                                               static_cast<int16_t>(progress), 4, 2,
                                               EGUI_COLOR_BLACK, EGUI_ALPHA_100);
     }
     const int16_t thumb_x = static_cast<int16_t>(progress_x + 1 + progress);
-    egui_canvas_draw_circle_fill_basic(canvas, thumb_x, progress_y + 3, 4,
+    egui_canvas_draw_circle_fill_basic(canvas, thumb_x, PROGRESS_Y + 3, 4,
                                        EGUI_COLOR_BLACK, EGUI_ALPHA_100);
 
     char elapsed[12] = {};
     char duration[12] = {};
     gui_format_time(player_status.elapsed_seconds, elapsed, sizeof(elapsed));
     gui_format_time(player_status.duration_seconds, duration, sizeof(duration));
-    egui_region_t elapsed_region = {{16, 98}, {100, 18}};
+    egui_region_t elapsed_region = {{16, TIME_Y}, {100, 18}};
     egui_canvas_draw_text_in_rect(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
                                   elapsed, &elapsed_region,
                                   EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER,
                                   EGUI_COLOR_BLACK, EGUI_ALPHA_100);
     draw_right_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
-                    duration, 268, 98, 100, 18);
+                    duration, 268, TIME_Y, 100, 18);
 
     for (uint8_t index = 0; index < CONTROL_COUNT; ++index) {
         draw_control(canvas, index);
@@ -366,14 +385,24 @@ void enter() {
     selected_track = player_status.track_count == 0 ? 0 : player_status.track_index;
     visible_track_start = 0;
     clamp_playlist_window();
-    std::memcpy(displayed_spectrum, player_status.spectrum,
-                sizeof(displayed_spectrum));
+    if (player_status.state == PlayerState::Playing) {
+        std::memcpy(displayed_spectrum, player_status.spectrum,
+                    sizeof(displayed_spectrum));
+    } else {
+        std::memset(displayed_spectrum, 0, sizeof(displayed_spectrum));
+    }
+    for (size_t index = 0; index < PLAYER_SPECTRUM_BANDS; ++index) {
+        spectrum_peaks[index] = spectrum_pixel_height(displayed_spectrum[index]);
+        spectrum_peak_ticks[index] = 0;
+    }
     last_spectrum_frame_ms = millis();
 }
 
 void exit() {
     navigation_active = false;
     subview = MusicSubview::Main;
+    std::memset(spectrum_peaks, 0, sizeof(spectrum_peaks));
+    std::memset(spectrum_peak_ticks, 0, sizeof(spectrum_peak_ticks));
 }
 
 void navigation_changed(bool active) {
@@ -492,7 +521,20 @@ bool service() {
                                             ? old_value - 24
                                             : 0;
         }
-        changed = changed || displayed_spectrum[index] != old_value;
+        const uint8_t old_peak = spectrum_peaks[index];
+        const uint8_t height = spectrum_pixel_height(displayed_spectrum[index]);
+        if (height >= spectrum_peaks[index]) {
+            spectrum_peaks[index] = height;
+            spectrum_peak_ticks[index] = 0;
+        } else if (spectrum_peaks[index] > 0) {
+            ++spectrum_peak_ticks[index];
+            if (spectrum_peak_ticks[index] >= SPECTRUM_PEAK_HOLD_FRAMES) {
+                spectrum_peak_ticks[index] = 0;
+                --spectrum_peaks[index];
+            }
+        }
+        changed = changed || displayed_spectrum[index] != old_value ||
+                  spectrum_peaks[index] != old_peak;
     }
     return changed && subview == MusicSubview::Main;
 }
@@ -501,9 +543,35 @@ bool update_status(const PlayerStatus &status) {
     if (status.version == player_status.version) {
         return false;
     }
+
+    const PlayerStatus previous = player_status;
     player_status = status;
     clamp_playlist_window();
-    return true;
+
+    const bool playback_context_changed =
+        previous.state != status.state ||
+        previous.error != status.error;
+
+    switch (subview) {
+        case MusicSubview::Main:
+            return playback_context_changed ||
+                   previous.track_index != status.track_index ||
+                   previous.track_count != status.track_count ||
+                   previous.elapsed_seconds != status.elapsed_seconds ||
+                   previous.duration_seconds != status.duration_seconds ||
+                   previous.volume != status.volume ||
+                   previous.playback_mode != status.playback_mode ||
+                   std::strcmp(previous.file_name, status.file_name) != 0 ||
+                   std::memcmp(previous.spectrum, status.spectrum,
+                               sizeof(status.spectrum)) != 0;
+        case MusicSubview::Volume:
+            return playback_context_changed || previous.volume != status.volume;
+        case MusicSubview::Playlist:
+            return playback_context_changed ||
+                   previous.track_index != status.track_index ||
+                   previous.track_count != status.track_count;
+    }
+    return false;
 }
 
 GuiPageDescriptor descriptor = {

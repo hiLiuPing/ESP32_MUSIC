@@ -14,6 +14,7 @@
 
 namespace {
 constexpr size_t FFT_SIZE = 512;
+constexpr int AUDIO_PSRAM_BUFFER_BYTES = 512 * 1024;
 constexpr uint32_t SPECTRUM_INTERVAL_MS = 80;
 constexpr uint32_t STATUS_INTERVAL_MS = 100;
 constexpr float SPECTRUM_MIN_HZ = 80.0F;
@@ -409,6 +410,9 @@ void player_task(void *parameter) {
     const EventBits_t bits = xEventGroupGetBits(HardwareEventGroup);
     sd_ready = (bits & HW_EVENT_SD_READY) != 0;
     codec_ready = (bits & HW_EVENT_CODEC_READY) != 0;
+    audio.setBufsize(-1, AUDIO_PSRAM_BUFFER_BYTES);
+    Serial.printf("[PLAYER] audio input buffer request=%d bytes (PSRAM preferred)\n",
+                  AUDIO_PSRAM_BUFFER_BYTES);
     if (codec_ready && !bsp_audio_configure_i2s(audio)) {
         codec_ready = false;
     }

@@ -7,8 +7,32 @@
 #include "task/task_system.h"
 #include "app/system_notify.h"
 
+namespace {
+constexpr uint32_t EXPECTED_PSRAM_BYTES = 2U * 1024U * 1024U;
+
+void log_psram_status() {
+    const bool found = psramFound();
+    const uint32_t total_bytes = ESP.getPsramSize();
+    const uint32_t free_bytes = ESP.getFreePsram();
+    Serial.printf("[HW] PSRAM %s, total=%lu bytes, free=%lu bytes\n",
+                  found ? "ready" : "unavailable",
+                  static_cast<unsigned long>(total_bytes),
+                  static_cast<unsigned long>(free_bytes));
+
+    if (!found) {
+        Serial.println("[HW] WARNING: PSRAM unavailable; audio will use the internal RAM buffer");
+    } else if (total_bytes != EXPECTED_PSRAM_BYTES) {
+        Serial.printf("[HW] WARNING: expected %lu bytes of PSRAM, detected %lu bytes\n",
+                      static_cast<unsigned long>(EXPECTED_PSRAM_BYTES),
+                      static_cast<unsigned long>(total_bytes));
+    }
+}
+}
+
 void hardware_init_task(void *parameter) {
     (void)parameter;
+
+    log_psram_status();
 
     Serial.println("[HW] LittleFS init");
     const bool littlefs_ready = bsp_littlefs_init();

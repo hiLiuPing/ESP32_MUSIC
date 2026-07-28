@@ -58,7 +58,7 @@ private:
 
     bool HPM_MODE = false;
     bool LPM_MODE = false;
-    ST7305QuantizeMode quantize_mode = ST7305QuantizeMode::Bayer4x4;
+    ST7305QuantizeMode quantize_mode = ST7305QuantizeMode::Threshold;
 
     uint8_t* display_buffer;
     SPIClass& spiRef;
