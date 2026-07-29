@@ -345,8 +345,22 @@ bool open_context(FontContext &ctx) {
         (head_len = rd32(head), head_len < sizeof(head))) return false;
     const int16_t ascent = rd16s(head + 16);
     const int16_t descent = rd16s(head + 18);
-    ctx.line_height = static_cast<uint16_t>(ascent - descent);
-    ctx.baseline = static_cast<int16_t>(-descent);
+    const int16_t typo_ascent = rd16s(head + 20);
+    const int16_t typo_descent = rd16s(head + 22);
+    const int16_t typo_line_gap = rd16s(head + 24);
+    const int32_t typo_line_height = static_cast<int32_t>(typo_ascent) -
+                                     typo_descent + typo_line_gap;
+    if (typo_ascent > 0 && typo_descent <= 0 && typo_line_gap >= 0 &&
+        typo_line_height > 0 && typo_line_height <= 0xFFFFL) {
+        ctx.line_height = static_cast<uint16_t>(typo_line_height);
+        ctx.baseline = typo_ascent;
+    } else {
+        const int32_t fallback_line_height = static_cast<int32_t>(ascent) - descent;
+        if (ascent <= 0 || descent > 0 || fallback_line_height <= 0 ||
+            fallback_line_height > 0xFFFFL) return false;
+        ctx.line_height = static_cast<uint16_t>(fallback_line_height);
+        ctx.baseline = ascent;
+    }
     ctx.default_advance = rd16(head + 30);
     ctx.loca_format = head[34];
     ctx.aw_format = head[36];

@@ -1938,9 +1938,9 @@ static void ui_HomePage_draw_date_text(egui_canvas_t *canvas,
     memcpy(day_text, month_pos + sizeof(month_marker) - 1U, day_len);
     day_text[day_len] = '\0';
 
-    pen_x += ui_HomePage_draw_text_advance(canvas, number_font, month_text, pen_x, y - 4, rgb);
+    pen_x += ui_HomePage_draw_text_advance(canvas, number_font, month_text, pen_x, y + 2, rgb);
     pen_x += ui_HomePage_draw_text_advance(canvas, heiti_font, month_marker, pen_x, y, rgb);
-    pen_x += ui_HomePage_draw_text_advance(canvas, number_font, day_text, pen_x, y - 4, rgb);
+    pen_x += ui_HomePage_draw_text_advance(canvas, number_font, day_text, pen_x, y + 2, rgb);
     (void)ui_HomePage_draw_text_advance(canvas, heiti_font, day_marker, pen_x, y, rgb);
 }
 

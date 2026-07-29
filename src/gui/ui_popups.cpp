@@ -16,7 +16,6 @@ constexpr int16_t POETRY_PAD_Y = 6;
 constexpr uint8_t POETRY_FONT_SIZE = 18U;
 constexpr int16_t POETRY_LINE_STEP = 22;
 constexpr int16_t POETRY_TITLE_BODY_GAP = 8;
-constexpr int16_t POETRY_FONT_TOP_GUARD = 4;
 constexpr int16_t POETRY_DISPLAY_W = POETRY_SCREEN_W - 2 * POETRY_PAD_X;
 constexpr int16_t POETRY_CONTENT_H = POETRY_SCREEN_H - 2 * POETRY_PAD_Y;
 constexpr uint8_t POETRY_MAX_LINES = 12U;
@@ -150,7 +149,7 @@ void draw_poetry(egui_canvas_t *canvas) {
     const int16_t title_x = static_cast<int16_t>((POETRY_SCREEN_W - poetry_title_width) / 2);
     const int16_t title_y = static_cast<int16_t>((POETRY_SCREEN_H - total_height) / 2);
     if (title_y + POETRY_FONT_SIZE > work->location.y &&
-        title_y - POETRY_FONT_TOP_GUARD < work->location.y + work->size.height) {
+        title_y < work->location.y + work->size.height) {
         egui_canvas_draw_text(canvas, font, poetry_title, title_x, title_y,
                               EGUI_COLOR_BLACK, EGUI_ALPHA_100);
     }
@@ -161,7 +160,7 @@ void draw_poetry(egui_canvas_t *canvas) {
         const int16_t line_x = static_cast<int16_t>((POETRY_SCREEN_W - line_width) / 2);
         const int16_t line_y = static_cast<int16_t>(start_y + i * POETRY_LINE_STEP);
         if (line_y + POETRY_FONT_SIZE > work->location.y &&
-            line_y - POETRY_FONT_TOP_GUARD < work->location.y + work->size.height) {
+            line_y < work->location.y + work->size.height) {
             egui_canvas_draw_text(canvas, font, poetry_lines[i], line_x, line_y,
                                   EGUI_COLOR_BLACK, EGUI_ALPHA_100);
         }
