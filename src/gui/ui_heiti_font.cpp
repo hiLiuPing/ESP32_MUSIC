@@ -3,6 +3,7 @@
 #include <LittleFS.h>
 #include <Arduino.h>
 #include <cstring>
+#include <esp_heap_caps.h>
 
 #include "bsp/bsp_littlefs.h"
 #include "resource/egui_resource.h"
@@ -59,6 +60,7 @@ struct FontContext {
     uint16_t cmap_count;
     CmapEntry cmap[MAX_CMAP];
     uint8_t glyph_raw[MAX_GLYPH_RAW];
+    egui_font_t cached_base;
 };
 
 struct GlyphCacheEntry {
@@ -67,6 +69,7 @@ struct GlyphCacheEntry {
     GlyphDsc dsc;
     uint32_t age;
     bool valid;
+    bool missing;
     uint8_t bitmap[GLYPH_CACHE_BITMAP_SIZE];
 };
 
@@ -77,10 +80,18 @@ FontContext contexts[3] = {
 };
 GlyphCacheEntry glyph_cache[GLYPH_CACHE_SLOTS] = {};
 uint32_t glyph_cache_age = 0U;
+GlyphCacheEntry *poetry_glyph_cache = nullptr;
+size_t poetry_glyph_capacity = 0U;
+size_t poetry_glyph_count = 0U;
+size_t poetry_glyph_bytes = 0U;
+uint32_t storage_read_count = 0U;
 
 int font_draw(const egui_font_t *, egui_canvas_t *, const void *, egui_dim_t, egui_dim_t, egui_color_t, egui_alpha_t);
 int font_size(const egui_font_t *, const void *, uint8_t, egui_dim_t, egui_dim_t *, egui_dim_t *);
+int cached_font_draw(const egui_font_t *, egui_canvas_t *, const void *, egui_dim_t, egui_dim_t, egui_color_t, egui_alpha_t);
+int cached_font_size(const egui_font_t *, const void *, uint8_t, egui_dim_t, egui_dim_t *, egui_dim_t *);
 const egui_font_api_t api = {font_draw, font_size};
+const egui_font_api_t cached_api = {cached_font_draw, cached_font_size};
 
 FontContext *context_for(const egui_font_t *font) {
     return font == nullptr ? nullptr : static_cast<FontContext *>(const_cast<void *>(font->res));
@@ -95,6 +106,7 @@ uint32_t rd32(const uint8_t *p) {
 
 bool read_at(FontContext &ctx, uint32_t offset, void *buffer, size_t length) {
     if (!ctx.file || buffer == nullptr || length == 0U || !bsp_littlefs_lock(pdMS_TO_TICKS(100U))) return false;
+    ++storage_read_count;
     const bool ok = ctx.file.seek(offset) && ctx.file.read(static_cast<uint8_t *>(buffer), length) == length;
     bsp_littlefs_unlock();
     return ok;
@@ -448,7 +460,15 @@ egui_alpha_t alpha_from_value(uint8_t value, uint8_t bpp) {
     return static_cast<egui_alpha_t>((static_cast<uint16_t>(value) * EGUI_ALPHA_100 + max_value / 2U) / max_value);
 }
 
-GlyphCacheEntry *find_cached_glyph(FontContext &ctx, uint32_t cp) {
+GlyphCacheEntry *find_poetry_cached_glyph(FontContext &ctx, uint32_t cp) {
+    for (size_t i = 0U; i < poetry_glyph_count; ++i) {
+        GlyphCacheEntry &entry = poetry_glyph_cache[i];
+        if (entry.valid && entry.font == &ctx && entry.cp == cp) return &entry;
+    }
+    return nullptr;
+}
+
+GlyphCacheEntry *find_regular_cached_glyph(FontContext &ctx, uint32_t cp) {
     for (GlyphCacheEntry &entry : glyph_cache) {
         if (entry.valid && entry.font == &ctx && entry.cp == cp) {
             entry.age = ++glyph_cache_age;
@@ -456,6 +476,56 @@ GlyphCacheEntry *find_cached_glyph(FontContext &ctx, uint32_t cp) {
         }
     }
     return nullptr;
+}
+
+GlyphCacheEntry *find_cached_glyph(FontContext &ctx, uint32_t cp) {
+    GlyphCacheEntry *entry = find_poetry_cached_glyph(ctx, cp);
+    return entry != nullptr ? entry : find_regular_cached_glyph(ctx, cp);
+}
+
+bool cache_poetry_glyph(FontContext &ctx, uint32_t cp) {
+    if (find_poetry_cached_glyph(ctx, cp) != nullptr) return true;
+    if (poetry_glyph_cache == nullptr || poetry_glyph_count >= poetry_glyph_capacity) return false;
+
+    GlyphCacheEntry *destination = &poetry_glyph_cache[poetry_glyph_count];
+    GlyphCacheEntry *regular = find_regular_cached_glyph(ctx, cp);
+    if (regular != nullptr) {
+        *destination = *regular;
+        destination->age = 0U;
+        ++poetry_glyph_count;
+        return true;
+    }
+
+    uint32_t glyph = 0U;
+    if (!lookup(ctx, cp, &glyph)) {
+        destination->font = &ctx;
+        destination->cp = cp;
+        destination->dsc.advance = static_cast<uint16_t>(ctx.requested_size / 2U);
+        destination->age = 0U;
+        destination->valid = true;
+        destination->missing = true;
+        ++poetry_glyph_count;
+        Serial.printf("[FONT_CACHE] missing U+%04lX, using '-'\n",
+                      static_cast<unsigned long>(cp));
+        return true;
+    }
+    GlyphDsc dsc = {};
+    uint8_t bitmap[MAX_GLYPH_RAW] = {};
+    if (!get_glyph(ctx, glyph, &dsc, bitmap, sizeof(bitmap))) return false;
+    const uint8_t pixel_bpp = ctx.bpp == 3U ? 4U : ctx.bpp;
+    const uint32_t bitmap_bytes =
+        (static_cast<uint32_t>(dsc.box_w) * dsc.box_h * pixel_bpp + 7U) >> 3;
+    if (bitmap_bytes > sizeof(destination->bitmap)) return false;
+
+    destination->font = &ctx;
+    destination->cp = cp;
+    destination->dsc = dsc;
+    destination->age = 0U;
+    destination->valid = true;
+    destination->missing = false;
+    if (bitmap_bytes != 0U) std::memcpy(destination->bitmap, bitmap, bitmap_bytes);
+    ++poetry_glyph_count;
+    return true;
 }
 
 GlyphCacheEntry *allocate_glyph_cache() {
@@ -467,14 +537,44 @@ GlyphCacheEntry *allocate_glyph_cache() {
     return oldest;
 }
 
+int render_cached_glyph(FontContext &ctx, const GlyphCacheEntry &cached,
+                        egui_canvas_t *canvas, egui_dim_t x, egui_dim_t y,
+                        egui_color_t color, egui_alpha_t alpha,
+                        egui_dim_t *advance) {
+    if (cached.missing) {
+        return draw_fallback(ctx, canvas, "-", 1, x, y, color, alpha, advance);
+    }
+    const GlyphDsc &dsc = cached.dsc;
+    if (advance != nullptr) *advance = dsc.advance;
+    if (canvas == nullptr || dsc.box_w == 0U || dsc.box_h == 0U) return 1;
+    const uint8_t pixel_bpp = ctx.bpp == 3U ? 4U : ctx.bpp;
+    for (uint16_t gy = 0U; gy < dsc.box_h; ++gy) {
+        for (uint16_t gx = 0U; gx < dsc.box_w; ++gx) {
+            uint32_t bit =
+                (static_cast<uint32_t>(gy) * dsc.box_w + gx) * pixel_bpp;
+            const uint8_t value = static_cast<uint8_t>(
+                bit_read(cached.bitmap, &bit, pixel_bpp));
+            const egui_alpha_t glyph_alpha = alpha_from_value(value, ctx.bpp);
+            if (glyph_alpha != EGUI_ALPHA_0) {
+                const egui_dim_t baseline = static_cast<egui_dim_t>(y + ctx.baseline);
+                egui_canvas_draw_point(
+                    canvas, static_cast<egui_dim_t>(x + dsc.ofs_x + gx),
+                    static_cast<egui_dim_t>(baseline - dsc.ofs_y - dsc.box_h + gy),
+                    color, egui_color_alpha_mix(alpha, glyph_alpha));
+            }
+        }
+    }
+    return 1;
+}
+
 int draw_glyph(FontContext &ctx, egui_canvas_t *canvas, uint32_t cp, egui_dim_t x, egui_dim_t y, egui_color_t color, egui_alpha_t alpha, egui_dim_t *advance) {
     GlyphDsc dsc = {};
     uint8_t bitmap[MAX_GLYPH_RAW] = {};
     const uint8_t *pixels = bitmap;
     GlyphCacheEntry *cached = find_cached_glyph(ctx, cp);
     if (cached != nullptr) {
-        dsc = cached->dsc;
-        pixels = cached->bitmap;
+        return render_cached_glyph(ctx, *cached, canvas, x, y, color, alpha,
+                                   advance);
     } else {
         uint32_t glyph = 0U;
         if (!lookup(ctx, cp, &glyph) || !get_glyph(ctx, glyph, &dsc, bitmap, sizeof(bitmap))) return 0;
@@ -487,6 +587,7 @@ int draw_glyph(FontContext &ctx, egui_canvas_t *canvas, uint32_t cp, egui_dim_t 
             cached->dsc = dsc;
             cached->age = ++glyph_cache_age;
             cached->valid = true;
+            cached->missing = false;
             std::memcpy(cached->bitmap, bitmap, bitmap_bytes);
             pixels = cached->bitmap;
         }
@@ -583,6 +684,102 @@ int font_size(const egui_font_t *font, const void *string, uint8_t multi, egui_d
     *height = total_height;
     return 0;
 }
+
+int cached_font_draw(const egui_font_t *font, egui_canvas_t *canvas,
+                     const void *string, egui_dim_t x, egui_dim_t y,
+                     egui_color_t color, egui_alpha_t alpha) {
+    FontContext *ctx = context_for(font);
+    const char *text = static_cast<const char *>(string);
+    if (ctx == nullptr || text == nullptr) return 0;
+    int consumed = 0;
+    egui_dim_t pen_x = x;
+    while (*text != '\0') {
+        if (*text == '\r') {
+            ++text;
+            ++consumed;
+            continue;
+        }
+        if (*text == '\n') {
+            ++consumed;
+            break;
+        }
+        uint32_t cp = 0U;
+        const int bytes = utf8_decode(text, &cp);
+        if (bytes <= 0) break;
+        egui_dim_t advance = 0;
+        if (cp < 0x80U) {
+            draw_fallback(*ctx, canvas, text, bytes, pen_x, y, color, alpha,
+                          &advance);
+        } else {
+            GlyphCacheEntry *cached = find_cached_glyph(*ctx, cp);
+            if (cached != nullptr) {
+                render_cached_glyph(*ctx, *cached, canvas, pen_x, y, color,
+                                    alpha, &advance);
+            } else {
+                draw_fallback(*ctx, canvas, "-", 1, pen_x, y, color, alpha,
+                              &advance);
+            }
+        }
+        pen_x = static_cast<egui_dim_t>(pen_x + advance);
+        text += bytes;
+        consumed += bytes;
+    }
+    return consumed;
+}
+
+int cached_font_size(const egui_font_t *font, const void *string, uint8_t multi,
+                     egui_dim_t line_space, egui_dim_t *width,
+                     egui_dim_t *height) {
+    FontContext *ctx = context_for(font);
+    const char *text = static_cast<const char *>(string);
+    if (ctx == nullptr || text == nullptr || width == nullptr || height == nullptr) {
+        return 0;
+    }
+    egui_dim_t line_width = 0;
+    egui_dim_t max_width = 0;
+    const egui_dim_t line_height =
+        ctx->line_height != 0U ? ctx->line_height : ctx->requested_size;
+    egui_dim_t total_height = line_height;
+    while (*text != '\0') {
+        if (*text == '\r') {
+            ++text;
+            continue;
+        }
+        if (*text == '\n') {
+            if (line_width > max_width) max_width = line_width;
+            if (multi == 0U) break;
+            line_width = 0;
+            total_height = static_cast<egui_dim_t>(
+                total_height + line_height + line_space);
+            ++text;
+            continue;
+        }
+        uint32_t cp = 0U;
+        const int bytes = utf8_decode(text, &cp);
+        if (bytes <= 0) break;
+        egui_dim_t advance = 0;
+        if (cp < 0x80U) {
+            const egui_font_t *fallback = fallback_for(*ctx);
+            egui_dim_t fw = 0;
+            egui_dim_t fh = 0;
+            char one[5] = {};
+            std::memcpy(one, text, static_cast<size_t>(bytes));
+            (void)egui_font_get_str_size_with_canvas(
+                fallback, nullptr, one, 0U, 0, &fw, &fh);
+            advance = fw > 0 ? fw : static_cast<egui_dim_t>(ctx->requested_size / 2U);
+        } else {
+            GlyphCacheEntry *cached = find_cached_glyph(*ctx, cp);
+            advance = cached != nullptr ? cached->dsc.advance
+                                        : static_cast<egui_dim_t>(ctx->requested_size / 2U);
+        }
+        line_width = static_cast<egui_dim_t>(line_width + advance);
+        text += bytes;
+    }
+    if (line_width > max_width) max_width = line_width;
+    *width = max_width;
+    *height = total_height;
+    return 0;
+}
 }
 
 const egui_font_t *ui_heiti_font_get(uint8_t size) {
@@ -594,8 +791,76 @@ const egui_font_t *ui_heiti_font_get(uint8_t size) {
     return &ctx->base;
 }
 
+const egui_font_t *ui_heiti_font_get_cached(uint8_t size) {
+    FontContext *ctx = select_context(size);
+    if (ctx->cached_base.api == nullptr) {
+        ctx->cached_base.res = ctx;
+        ctx->cached_base.api = &cached_api;
+    }
+    (void)open_context(*ctx);
+    return &ctx->cached_base;
+}
+
 bool ui_heiti_font_is_ready(uint8_t size) {
     FontContext *ctx = select_context(size);
     (void)ui_heiti_font_get(size);
     return ctx->ready;
 }
+
+bool ui_heiti_font_poetry_cache_init(size_t max_bytes) {
+    if (poetry_glyph_cache != nullptr) return true;
+    const size_t capacity = max_bytes / sizeof(GlyphCacheEntry);
+    if (capacity == 0U || !psramFound()) return false;
+    const size_t bytes = capacity * sizeof(GlyphCacheEntry);
+    poetry_glyph_cache = static_cast<GlyphCacheEntry *>(
+        heap_caps_calloc(capacity, sizeof(GlyphCacheEntry),
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (poetry_glyph_cache == nullptr) return false;
+    poetry_glyph_capacity = capacity;
+    poetry_glyph_bytes = bytes;
+    Serial.printf("[POETRY_CACHE] glyph pool=%u bytes, capacity=%u\n",
+                  static_cast<unsigned>(bytes), static_cast<unsigned>(capacity));
+    for (FontContext &ctx : contexts) {
+        if (ctx.requested_size <= 18U) (void)open_context(ctx);
+    }
+    return true;
+}
+
+bool ui_heiti_font_cache_text(uint8_t size, const char *text) {
+    FontContext *ctx = select_context(size);
+    if (text == nullptr || poetry_glyph_cache == nullptr ||
+        !ui_heiti_font_is_ready(size)) return false;
+    while (*text != '\0') {
+        if (*text == '\r' || *text == '\n') {
+            ++text;
+            continue;
+        }
+        uint32_t cp = 0U;
+        const int bytes = utf8_decode(text, &cp);
+        if (bytes <= 0) return false;
+        if (cp >= 0x80U && !cache_poetry_glyph(*ctx, cp)) return false;
+        text += bytes;
+    }
+    return true;
+}
+
+bool ui_heiti_font_text_is_cached(uint8_t size, const char *text) {
+    FontContext *ctx = select_context(size);
+    if (text == nullptr || poetry_glyph_cache == nullptr) return false;
+    while (*text != '\0') {
+        if (*text == '\r' || *text == '\n') {
+            ++text;
+            continue;
+        }
+        uint32_t cp = 0U;
+        const int bytes = utf8_decode(text, &cp);
+        if (bytes <= 0) return false;
+        if (cp >= 0x80U && find_poetry_cached_glyph(*ctx, cp) == nullptr) return false;
+        text += bytes;
+    }
+    return true;
+}
+
+size_t ui_heiti_font_poetry_cache_bytes() { return poetry_glyph_bytes; }
+size_t ui_heiti_font_poetry_cache_glyphs() { return poetry_glyph_count; }
+uint32_t ui_heiti_font_storage_read_count() { return storage_read_count; }

@@ -8,8 +8,8 @@ WM8978 codec. The firmware is split into four layers:
 - `src/task`: FreeRTOS object creation and hardware/input/player/GUI tasks.
 - `src/gui`: boot, home, music, weather, poetry and setting pages.
 
-The player does not start playback at boot. It recursively indexes up to 128 MP3
-files below `/music` on the SD card and waits on the first track. Weather/time
+The player does not start playback at boot. It recursively indexes up to 1000 MP3
+files below `/music` into a PSRAM-backed path cache and waits on the first track. Weather/time
 synchronization is disabled by default; when enabled in Setting, the firmware
 uses the saved Wi-Fi profile to query NTP and QWeather on the configured interval.
 
@@ -43,8 +43,10 @@ status
 
 Physical keys use two navigation levels. After switching pages with left and
 right, click the middle key to enter that page's controls. While inside a page,
-hold the right key to return to page switching; the same press is not forwarded
-to the page. Playback continues after leaving the music page.
+hold the right key to leave its controls; hold it again to return through page
+history until reaching Home. The same press is not forwarded to the page. Home
+has no internal controls, so clicking the middle key there has no effect.
+Playback continues after leaving the music page.
 
 On the music page, left and right move across volume, playback mode, previous,
 play/pause, next and playlist. The middle key activates the selected control.

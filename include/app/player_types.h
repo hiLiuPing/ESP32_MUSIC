@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-constexpr size_t PLAYER_MAX_TRACKS = 128;
+constexpr size_t PLAYER_MAX_TRACKS = 1000;
 constexpr size_t PLAYER_PATH_LENGTH = 256;
 constexpr size_t PLAYER_NAME_LENGTH = 128;
 constexpr uint8_t PLAYER_VOLUME_MIN = 0;

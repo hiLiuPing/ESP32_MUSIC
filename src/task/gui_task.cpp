@@ -4,6 +4,7 @@
 #include "bsp/bsp_display.h"
 #include "gui/page_manager.h"
 #include "gui/egui_port.h"
+#include "gui/screens/ui_music_page.h"
 #include "gui/ui.h"
 #include "task/task_system.h"
 
@@ -37,6 +38,7 @@ void gui_task(void *parameter) {
             gui_page_update_status(status);
         }
 
+        ui_music_page_cache_service();
         gui_page_service();
         gui_page_render();
         egui_port_poll();

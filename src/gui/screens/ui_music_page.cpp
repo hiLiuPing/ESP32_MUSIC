@@ -33,7 +33,9 @@ constexpr egui_region_t SPECTRUM_REGION = {{12, 23}, {360, 65}};
 constexpr egui_region_t PROGRESS_REGION = {{12, 91}, {360, 34}};
 constexpr egui_region_t CONTROLS_REGION = {{0, 128}, {384, 40}};
 constexpr egui_region_t PLAYLIST_HEADER_REGION = {{0, 0}, {384, 22}};
+constexpr egui_region_t PLAYLIST_BODY_REGION = {{0, 22}, {384, 146}};
 constexpr egui_region_t PLAYLIST_EMPTY_REGION = {{12, 62}, {360, 28}};
+constexpr uint8_t PLAYLIST_GLYPH_PREFETCH_BATCH = 4U;
 
 enum class MusicSubview : uint8_t {
     Main,
@@ -52,6 +54,9 @@ uint8_t displayed_spectrum[PLAYER_SPECTRUM_BANDS] = {};
 uint8_t spectrum_peaks[PLAYER_SPECTRUM_BANDS] = {};
 uint8_t spectrum_peak_ticks[PLAYER_SPECTRUM_BANDS] = {};
 uint32_t last_spectrum_frame_ms = 0;
+uint16_t playlist_glyph_cursor = 0U;
+uint16_t playlist_glyph_track_count = 0U;
+bool playlist_glyph_cache_full = false;
 
 uint8_t spectrum_pixel_height(uint8_t level) {
     if (level == 0) return 0;
@@ -69,7 +74,7 @@ bool work_intersects(egui_canvas_t *canvas, const egui_region_t &region) {
 }
 
 const egui_font_t *music_font() {
-    const egui_font_t *font = ui_heiti_font_get(16U);
+    const egui_font_t *font = ui_heiti_font_get_cached(16U);
     return font != nullptr ? font
                            : reinterpret_cast<const egui_font_t *>(EGUI_CONFIG_FONT_DEFAULT);
 }
@@ -460,6 +465,32 @@ void move_playlist(int direction) {
     clamp_playlist_window();
 }
 
+egui_region_t playlist_row_region(uint16_t index, uint16_t window_start) {
+    const int16_t row = static_cast<int16_t>(index - window_start);
+    return {{4, static_cast<int16_t>(24 + row * 20)}, {376, 19}};
+}
+
+void invalidate_playlist_selection(uint16_t old_selected,
+                                   uint16_t old_window_start) {
+    egui_view_invalidate_region(EGUI_VIEW_OF(&view), &PLAYLIST_HEADER_REGION);
+    if (old_window_start != visible_track_start) {
+        egui_view_invalidate_region(EGUI_VIEW_OF(&view), &PLAYLIST_BODY_REGION);
+        return;
+    }
+    const egui_region_t old_row =
+        playlist_row_region(old_selected, old_window_start);
+    const egui_region_t new_row =
+        playlist_row_region(selected_track, visible_track_start);
+    egui_view_invalidate_region(EGUI_VIEW_OF(&view), &old_row);
+    egui_view_invalidate_region(EGUI_VIEW_OF(&view), &new_row);
+}
+
+void reset_playlist_glyph_prefetch() {
+    playlist_glyph_cursor = 0U;
+    playlist_glyph_track_count = player_status.track_count;
+    playlist_glyph_cache_full = false;
+}
+
 void execute_control() {
     switch (selected_control) {
         case CONTROL_VOLUME:
@@ -518,7 +549,11 @@ bool key_consume(const KeyEvent &event) {
             (void)task_post_player_command(PlayerCommandType::ChangeVolume,
                                            static_cast<int16_t>(direction));
         } else {
+            const uint16_t old_selected = selected_track;
+            const uint16_t old_window_start = visible_track_start;
             move_playlist(direction);
+            invalidate_playlist_selection(old_selected, old_window_start);
+            return false;
         }
         return true;
     }
@@ -575,6 +610,40 @@ bool service() {
     return false;
 }
 
+void cache_playlist_glyphs() {
+    if (playlist_glyph_track_count != player_status.track_count) {
+        reset_playlist_glyph_prefetch();
+    }
+    if (!playlist_glyph_cache_full &&
+        player_status.state != PlayerState::Playing &&
+        playlist_glyph_cursor < playlist_glyph_track_count) {
+        for (uint8_t batch = 0U;
+             batch < PLAYLIST_GLYPH_PREFETCH_BATCH &&
+             playlist_glyph_cursor < playlist_glyph_track_count;
+             ++batch) {
+            char name[PLAYER_NAME_LENGTH] = {};
+            if (music_library_get(playlist_glyph_cursor, nullptr, 0U, name,
+                                  sizeof(name)) &&
+                ui_heiti_font_cache_text(16U, name)) {
+                ++playlist_glyph_cursor;
+                continue;
+            }
+            playlist_glyph_cache_full = true;
+            Serial.printf("[MUSIC_UI] glyph prefetch stopped at %u/%u glyphs=%u\n",
+                          playlist_glyph_cursor, playlist_glyph_track_count,
+                          static_cast<unsigned>(ui_heiti_font_poetry_cache_glyphs()));
+            break;
+        }
+        if (!playlist_glyph_cache_full &&
+            playlist_glyph_cursor == playlist_glyph_track_count) {
+            Serial.printf("[MUSIC_UI] glyph prefetch complete tracks=%u glyphs=%u reads=%lu\n",
+                          playlist_glyph_track_count,
+                          static_cast<unsigned>(ui_heiti_font_poetry_cache_glyphs()),
+                          static_cast<unsigned long>(ui_heiti_font_storage_read_count()));
+        }
+    }
+}
+
 bool update_status(const PlayerStatus &status) {
     if (status.version == player_status.version) {
         return false;
@@ -582,6 +651,9 @@ bool update_status(const PlayerStatus &status) {
 
     const PlayerStatus previous = player_status;
     player_status = status;
+    if (previous.track_count != status.track_count) {
+        reset_playlist_glyph_prefetch();
+    }
     clamp_playlist_window();
 
     const bool playback_context_changed =
@@ -621,4 +693,8 @@ GuiPageDescriptor descriptor = {
 
 GuiPageDescriptor &ui_music_page_descriptor() {
     return descriptor;
+}
+
+void ui_music_page_cache_service() {
+    cache_playlist_glyphs();
 }

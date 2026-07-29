@@ -226,11 +226,27 @@ void gui_page_handle_key(const KeyEvent &event) {
         return;
     }
 
+    if ((event.id == KeyId::Right) && (event.gesture == KeyGesture::LongPress)) {
+        if (internal_navigation) {
+            internal_navigation = false;
+            if (current_page->navigation_changed != nullptr) {
+                current_page->navigation_changed(false);
+            }
+            dirty = true;
+        } else {
+            gui_page_back();
+        }
+        return;
+    }
+
     if (!internal_navigation) {
         if (event.gesture != KeyGesture::Click) {
             return;
         }
         if (event.id == KeyId::Middle) {
+            if (current_page->id == UiPage::Home) {
+                return;
+            }
             internal_navigation = true;
             if (current_page->navigation_changed != nullptr) {
                 current_page->navigation_changed(true);
@@ -241,15 +257,6 @@ void gui_page_handle_key(const KeyEvent &event) {
         } else if (event.id == KeyId::Right) {
             gui_page_next();
         }
-        return;
-    }
-
-    if ((event.id == KeyId::Right) && (event.gesture == KeyGesture::LongPress)) {
-        internal_navigation = false;
-        if (current_page->navigation_changed != nullptr) {
-            current_page->navigation_changed(false);
-        }
-        dirty = true;
         return;
     }
 
@@ -271,7 +278,7 @@ void gui_page_update_status(const PlayerStatus &status) {
 }
 
 void gui_page_service() {
-    ui_popups_service(gui_page_current() == UiPage::Home);
+    ui_popups_service(gui_page_current());
     if ((current_page != nullptr) && (current_page->service != nullptr) &&
         current_page->service()) {
         dirty = true;
