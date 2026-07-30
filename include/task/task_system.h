@@ -28,4 +28,5 @@ extern EventGroupHandle_t HardwareEventGroup;
 
 void task_system_init();
 bool task_post_player_command(PlayerCommandType type, int16_t value = 0);
+bool task_post_player_audio_settings(const AudioSettings &settings, bool persist);
 void task_publish_player_status(const PlayerStatus &status);

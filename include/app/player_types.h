@@ -16,6 +16,15 @@ enum class PlaybackMode : uint8_t {
     Shuffle,
 };
 
+struct AudioSettings {
+    uint8_t volume;
+    PlaybackMode playback_mode;
+    bool amplifier_enabled;
+    int8_t bass_db;
+    int8_t treble_db;
+    uint8_t surround_depth;
+};
+
 enum class PlayerState : uint8_t {
     Initializing,
     Ready,
@@ -48,12 +57,15 @@ enum class PlayerCommandType : uint8_t {
     SetVolume,
     ChangeVolume,
     CyclePlaybackMode,
+    ApplyAudioSettings,
     Rescan,
 };
 
 struct PlayerCommand {
     PlayerCommandType type;
     int16_t value;
+    AudioSettings audio_settings;
+    bool persist_audio_settings;
 };
 
 struct PlayerStatus {
@@ -66,6 +78,10 @@ struct PlayerStatus {
     uint32_t duration_seconds;
     uint8_t volume;
     PlaybackMode playback_mode;
+    bool amplifier_enabled;
+    int8_t bass_db;
+    int8_t treble_db;
+    uint8_t surround_depth;
     uint8_t spectrum[PLAYER_SPECTRUM_BANDS];
     char file_name[PLAYER_NAME_LENGTH];
 };

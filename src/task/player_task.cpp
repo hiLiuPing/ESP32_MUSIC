@@ -8,6 +8,7 @@
 #include <esp_system.h>
 
 #include "app/music_library.h"
+#include "app/audio_settings.h"
 #include "bsp/bsp_audio.h"
 #include "bsp/bsp_storage.h"
 #include "task/task_system.h"
@@ -27,6 +28,7 @@ volatile bool eof_received = false;
 PlayerStatus status = {};
 bool sd_ready = false;
 bool codec_ready = false;
+bool i2s_ready = false;
 bool track_started = false;
 TickType_t last_status_tick = 0;
 TickType_t last_spectrum_tick = 0;
@@ -43,11 +45,62 @@ uint16_t shuffle_order[PLAYER_MAX_TRACKS] = {};
 uint16_t shuffle_count = 0;
 uint16_t shuffle_cursor = 0;
 
+void publish(bool force = false);
+
+void normalize_audio_settings(AudioSettings &settings) {
+    settings.volume = static_cast<uint8_t>(
+        constrain(static_cast<int>(settings.volume), PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX));
+    if (static_cast<uint8_t>(settings.playback_mode) >
+        static_cast<uint8_t>(PlaybackMode::Shuffle)) {
+        settings.playback_mode = PlaybackMode::Shuffle;
+    }
+    settings.bass_db = static_cast<int8_t>(
+        constrain(static_cast<int>(settings.bass_db), -12, 12));
+    settings.treble_db = static_cast<int8_t>(
+        constrain(static_cast<int>(settings.treble_db), -12, 12));
+    settings.surround_depth = static_cast<uint8_t>(
+        constrain(static_cast<int>(settings.surround_depth), 0, 15));
+    settings.amplifier_enabled = settings.amplifier_enabled ? true : false;
+}
+
+AudioSettings current_audio_settings() {
+    return AudioSettings{status.volume, status.playback_mode,
+                         status.amplifier_enabled, status.bass_db,
+                         status.treble_db, status.surround_depth};
+}
+
+void persist_runtime_audio_settings() {
+    (void)audio_settings_update(current_audio_settings());
+}
+
+void apply_audio_settings(const AudioSettings &requested, bool persist) {
+    AudioSettings settings = requested;
+    normalize_audio_settings(settings);
+    status.volume = settings.volume;
+    status.playback_mode = settings.playback_mode;
+    status.amplifier_enabled = settings.amplifier_enabled;
+    status.bass_db = settings.bass_db;
+    status.treble_db = settings.treble_db;
+    status.surround_depth = settings.surround_depth;
+    audio.setVolume(status.volume);
+    if (codec_ready) {
+        bsp_audio_apply_codec_settings(status.bass_db, status.treble_db,
+                                       status.surround_depth);
+        bsp_audio_apply_output_route(status.amplifier_enabled);
+    }
+    bsp_audio_set_amplifier_enabled(codec_ready && i2s_ready &&
+                                    status.amplifier_enabled);
+    if (persist) {
+        (void)audio_settings_update(settings);
+    }
+    publish(true);
+}
+
 void clear_spectrum() {
     std::memset(status.spectrum, 0, sizeof(status.spectrum));
 }
 
-void publish(bool force = false) {
+void publish(bool force) {
     const TickType_t now = xTaskGetTickCount();
     if (!force && ((now - last_status_tick) < pdMS_TO_TICKS(STATUS_INTERVAL_MS))) {
         return;
@@ -363,12 +416,14 @@ void handle_command(const PlayerCommand &command) {
         case PlayerCommandType::SetVolume:
             status.volume = constrain(command.value, PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX);
             audio.setVolume(status.volume);
+            persist_runtime_audio_settings();
             publish(true);
             break;
         case PlayerCommandType::ChangeVolume:
             status.volume = constrain(static_cast<int>(status.volume) + command.value,
                                       PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX);
             audio.setVolume(status.volume);
+            persist_runtime_audio_settings();
             publish(true);
             break;
         case PlayerCommandType::CyclePlaybackMode:
@@ -377,7 +432,12 @@ void handle_command(const PlayerCommand &command) {
             if (status.playback_mode == PlaybackMode::Shuffle) {
                 build_shuffle(status.track_index);
             }
+            persist_runtime_audio_settings();
             publish(true);
+            break;
+        case PlayerCommandType::ApplyAudioSettings:
+            apply_audio_settings(command.audio_settings,
+                                 command.persist_audio_settings);
             break;
         case PlayerCommandType::Rescan: rescan_library(); break;
     }
@@ -402,10 +462,16 @@ void audio_info(const char *info) {
 
 void player_task(void *parameter) {
     (void)parameter;
+    audio_settings_init();
+    const AudioSettings saved_audio_settings = audio_settings_get();
     std::memset(&status, 0, sizeof(status));
     status.state = PlayerState::Initializing;
-    status.volume = PLAYER_DEFAULT_VOLUME;
-    status.playback_mode = PlaybackMode::RepeatAll;
+    status.volume = saved_audio_settings.volume;
+    status.playback_mode = saved_audio_settings.playback_mode;
+    status.amplifier_enabled = saved_audio_settings.amplifier_enabled;
+    status.bass_db = saved_audio_settings.bass_db;
+    status.treble_db = saved_audio_settings.treble_db;
+    status.surround_depth = saved_audio_settings.surround_depth;
     init_spectrum();
     publish(true);
 
@@ -416,8 +482,13 @@ void player_task(void *parameter) {
     audio.setBufsize(-1, AUDIO_PSRAM_BUFFER_BYTES);
     Serial.printf("[PLAYER] audio input buffer request=%d bytes (PSRAM preferred)\n",
                   AUDIO_PSRAM_BUFFER_BYTES);
-    if (codec_ready && !bsp_audio_configure_i2s(audio)) {
-        codec_ready = false;
+    if (codec_ready) {
+        i2s_ready = bsp_audio_configure_i2s(audio,
+                                            saved_audio_settings.amplifier_enabled);
+        if (!i2s_ready) codec_ready = false;
+        if (i2s_ready) {
+            bsp_audio_apply_output_route(saved_audio_settings.amplifier_enabled);
+        }
     }
     audio.setVolume(status.volume);
     rescan_library();

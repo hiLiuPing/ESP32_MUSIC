@@ -84,11 +84,26 @@ void task_system_init() {
 }
 
 bool task_post_player_command(PlayerCommandType type, int16_t value) {
-    const PlayerCommand command{type, value};
+    PlayerCommand command = {};
+    command.type = type;
+    command.value = value;
     const bool posted = (PlayerCommandQueue != nullptr) &&
                         (xQueueSend(PlayerCommandQueue, &command, pdMS_TO_TICKS(20)) == pdTRUE);
     if (!posted) {
         Serial.println("[PLAYER] command queue full");
+    }
+    return posted;
+}
+
+bool task_post_player_audio_settings(const AudioSettings &settings, bool persist) {
+    PlayerCommand command = {};
+    command.type = PlayerCommandType::ApplyAudioSettings;
+    command.audio_settings = settings;
+    command.persist_audio_settings = persist;
+    const bool posted = (PlayerCommandQueue != nullptr) &&
+                        (xQueueSend(PlayerCommandQueue, &command, pdMS_TO_TICKS(20)) == pdTRUE);
+    if (!posted) {
+        Serial.println("[PLAYER] audio settings command queue full");
     }
     return posted;
 }

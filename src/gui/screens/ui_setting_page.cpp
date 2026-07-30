@@ -14,21 +14,35 @@ uint8_t selected = 0U;
 bool editing = false;
 bool navigation_active = false;
 bool last_provisioning = false;
-constexpr uint8_t ITEM_COUNT = 9U;
+constexpr uint8_t ITEM_COUNT = 5U;
 
-const char *labels[ITEM_COUNT] = {"POETRY POPUP", "POETRY INTERVAL", "POETRY DURATION", "WEATHER SYNC", "WEATHER INTERVAL", "WIFI CONFIG", "HOME THEME", "SCREEN SLEEP", "AUTO POWER OFF"};
+const char *labels[ITEM_COUNT] = {"POETRY POPUP", "POETRY DURATION", "WEATHER SYNC", "WIFI CONFIG", "SCREEN SLEEP"};
+
+uint16_t adjust_interval(uint16_t value, int delta) {
+    if (value == 0U) return delta > 0 ? 30U : 0U;
+    if (value == 30U && delta < 0) return 0U;
+
+    const int next = static_cast<int>(value) + delta * 10;
+    if (next < 30) return 30U;
+    if (next > 300) return 300U;
+    return static_cast<uint16_t>(next);
+}
 
 void format_value(uint8_t i, char *out, size_t size) {
     switch (i) {
-        case 0: std::snprintf(out, size, "%s", settings.poetry_enabled ? "ON" : "OFF"); break;
-        case 1: std::snprintf(out, size, settings.poetry_interval_min ? "%u MIN" : "OFF", settings.poetry_interval_min); break;
-        case 2: std::snprintf(out, size, "%u SEC", settings.poetry_duration_s); break;
-        case 3: std::snprintf(out, size, "%s", settings.weather_sync_enabled ? "ON" : "OFF"); break;
-        case 4: std::snprintf(out, size, "%u MIN", settings.weather_interval_min); break;
-        case 5: std::snprintf(out, size, "%s", weather_sync_is_provisioning() ? "STOP" : "START"); break;
-        case 6: std::snprintf(out, size, "THEME %u", settings.home_theme); break;
-        case 7: std::snprintf(out, size, settings.screen_idle_min ? "%u MIN" : "OFF", settings.screen_idle_min); break;
-        case 8: std::snprintf(out, size, settings.auto_off_min ? "%u MIN" : "OFF", settings.auto_off_min); break;
+        case 0:
+            std::snprintf(out, size,
+                          settings.poetry_interval_min ? "%u MIN" : "OFF",
+                          settings.poetry_interval_min);
+            break;
+        case 1: std::snprintf(out, size, "%u SEC", settings.poetry_duration_s); break;
+        case 2:
+            std::snprintf(out, size,
+                          settings.weather_interval_min ? "%u MIN" : "OFF",
+                          settings.weather_interval_min);
+            break;
+        case 3: std::snprintf(out, size, "%s", weather_sync_is_provisioning() ? "STOP" : "START"); break;
+        case 4: std::snprintf(out, size, settings.screen_idle_min ? "%u MIN" : "OFF", settings.screen_idle_min); break;
         default: out[0] = '\0'; break;
     }
 }
@@ -55,21 +69,17 @@ void draw(egui_canvas_t *canvas) {
 
 void adjust(int delta) {
     switch (selected) {
-        case 0: settings.poetry_enabled = !settings.poetry_enabled; break;
-        case 1: settings.poetry_interval_min = settings.poetry_interval_min == 0U ? 5U : static_cast<uint16_t>(settings.poetry_interval_min + delta * 5); if (settings.poetry_interval_min > 60U) settings.poetry_interval_min = 0U; break;
-        case 2: settings.poetry_duration_s = static_cast<uint16_t>(constrain(static_cast<int>(settings.poetry_duration_s) + delta * 5, 5, 300)); break;
-        case 3: settings.weather_sync_enabled = settings.weather_sync_enabled ? 0U : 1U; break;
-        case 4: {
-            int next = static_cast<int>(settings.weather_interval_min) + delta * 10;
-            if (next < 30) next = 180;
-            if (next > 180) next = 30;
-            settings.weather_interval_min = static_cast<uint16_t>(next);
+        case 0:
+            settings.poetry_interval_min =
+                adjust_interval(settings.poetry_interval_min, delta);
             break;
-        }
-        case 5: break;
-        case 6: settings.home_theme = settings.home_theme == 1U ? 2U : 1U; break;
-        case 7: settings.screen_idle_min = settings.screen_idle_min == 0U ? 1U : static_cast<uint16_t>(settings.screen_idle_min + delta); if (settings.screen_idle_min > 360U) settings.screen_idle_min = 0U; break;
-        case 8: settings.auto_off_min = settings.auto_off_min == 0U ? 30U : static_cast<uint16_t>(settings.auto_off_min + delta * 30); if (settings.auto_off_min > 480U) settings.auto_off_min = 0U; break;
+        case 1: settings.poetry_duration_s = static_cast<uint16_t>(constrain(static_cast<int>(settings.poetry_duration_s) + delta * 5, 5, 300)); break;
+        case 2:
+            settings.weather_interval_min =
+                adjust_interval(settings.weather_interval_min, delta);
+            break;
+        case 3: break;
+        case 4: settings.screen_idle_min = settings.screen_idle_min == 0U ? 1U : static_cast<uint16_t>(settings.screen_idle_min + delta); if (settings.screen_idle_min > 360U) settings.screen_idle_min = 0U; break;
     }
 }
 
@@ -90,7 +100,7 @@ bool key_consume(const KeyEvent &event) {
         if (event.id == KeyId::Middle && event.gesture == KeyGesture::Click) {
             const bool changed = settings_app_update(settings);
             if (changed) (void)weather_sync_request(WEATHER_SYNC_SETTINGS_CHANGED);
-            if (selected == 5U) {
+            if (selected == 3U) {
                 (void)weather_sync_request(weather_sync_is_provisioning() ? WEATHER_SYNC_STOP_AP : WEATHER_SYNC_START_AP);
             }
             editing = false;

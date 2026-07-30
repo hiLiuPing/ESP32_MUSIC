@@ -153,7 +153,7 @@ void weather_sync_task(void *parameter) {
     }
 
     AppSettings settings = settings_app_get();
-    uint32_t pending = settings.weather_sync_enabled ? WEATHER_SYNC_NOW : 0U;
+    uint32_t pending = settings.weather_interval_min != 0U ? WEATHER_SYNC_NOW : 0U;
     bool force_sync = false;
     for (;;) {
         uint32_t request = 0U;
@@ -179,7 +179,7 @@ void weather_sync_task(void *parameter) {
         if ((pending & WEATHER_SYNC_SETTINGS_CHANGED) != 0U) {
             pending &= ~WEATHER_SYNC_SETTINGS_CHANGED;
             settings = settings_app_get();
-            if (!settings.weather_sync_enabled) {
+            if (settings.weather_interval_min == 0U) {
                 stop_timer();
                 if (!force_sync) weather_network_stop_ap();
             } else {
@@ -188,7 +188,7 @@ void weather_sync_task(void *parameter) {
         }
         settings = settings_app_get();
         const bool due = (pending & WEATHER_SYNC_NOW) != 0U;
-        if (due && !weather_network_ap_active() && (settings.weather_sync_enabled || force_sync)) {
+        if (due && !weather_network_ap_active() && (settings.weather_interval_min != 0U || force_sync)) {
             if (!weather_network_has_profiles()) {
                 pending &= ~WEATHER_SYNC_NOW;
                 show_ap_notice();
@@ -198,9 +198,9 @@ void weather_sync_task(void *parameter) {
             const bool success = perform_sync();
             force_sync = false;
             settings = settings_app_get();
-            if (settings.weather_sync_enabled) arm_timer(settings.weather_interval_min);
+            if (settings.weather_interval_min != 0U) arm_timer(settings.weather_interval_min);
             else stop_timer();
-        } else if (due && !settings.weather_sync_enabled && !force_sync) {
+        } else if (due && settings.weather_interval_min == 0U && !force_sync) {
             pending &= ~WEATHER_SYNC_NOW;
             stop_timer();
         }

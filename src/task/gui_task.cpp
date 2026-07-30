@@ -19,7 +19,6 @@ void gui_task(void *parameter) {
 
     uint32_t last_input_ms = millis();
     bool display_sleeping = false;
-    bool display_poweroff = false;
     for (;;) {
         KeyEvent event = {};
         while (xQueueReceive(GuiKeyQueue, &event, 0) == pdTRUE) {
@@ -27,7 +26,6 @@ void gui_task(void *parameter) {
             if (display_sleeping) {
                 bsp_display().display_on(true);
                 display_sleeping = false;
-                display_poweroff = false;
                 egui_core_force_refresh(egui_port_core());
             }
             gui_page_handle_key(event);
@@ -49,13 +47,6 @@ void gui_task(void *parameter) {
             bsp_display().display_on(false);
             display_sleeping = true;
         }
-        if (!display_poweroff && settings.auto_off_min != 0U &&
-            millis() - last_input_ms >= static_cast<uint32_t>(settings.auto_off_min) * 60000UL) {
-            bsp_display().display_on(false);
-            display_sleeping = true;
-            display_poweroff = true;
-        }
-
         xSemaphoreTake(GuiWakeSemaphore, pdMS_TO_TICKS(50));
     }
 }

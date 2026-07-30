@@ -13,7 +13,12 @@ constexpr uint32_t AUDIO_POWER_SETTLE_MS = 100U;
 constexpr uint32_t AMPLIFIER_SETTLE_MS = 5U;
 constexpr uint8_t CODEC_INIT_ATTEMPTS = 3U;
 constexpr uint8_t SPEAKER_VOLUME = 55U;
-constexpr uint8_t HEADPHONE_VOLUME = 0U;
+constexpr uint8_t HEADPHONE_ACTIVE_VOLUME = 63U;
+constexpr uint8_t HEADPHONE_MUTED_VOLUME = 0U;
+
+uint8_t eq_gain_from_db(int8_t db) {
+    return static_cast<uint8_t>(constrain(static_cast<int>(db) + 12, 0, 24));
+}
 
 bool start_i2c_bus() {
     const bool ready = Wire.begin(BoardConfig::I2cSda, BoardConfig::I2cScl, I2C_FREQUENCY);
@@ -59,6 +64,29 @@ void power_cycle_codec() {
 }
 }
 
+void bsp_audio_apply_codec_settings(int8_t bass_db, int8_t treble_db,
+                                    uint8_t surround_depth) {
+    codec.set3Ddir(1U);  // Apply playback effects to the DAC path.
+    codec.setEQ1(0U, eq_gain_from_db(bass_db));
+    codec.setEQ2(0U, 12U);
+    codec.setEQ3(0U, 12U);
+    codec.setEQ4(0U, 12U);
+    codec.setEQ5(3U, eq_gain_from_db(treble_db));
+    codec.set3D(static_cast<uint8_t>(constrain(static_cast<int>(surround_depth), 0, 15)));
+}
+
+void bsp_audio_set_amplifier_enabled(bool enabled) {
+    pinMode(BoardConfig::AmplifierEnable, OUTPUT);
+    digitalWrite(BoardConfig::AmplifierEnable, enabled ? HIGH : LOW);
+}
+
+void bsp_audio_apply_output_route(bool amplifier_enabled) {
+    const uint8_t headphone_volume = amplifier_enabled
+                                         ? HEADPHONE_MUTED_VOLUME
+                                         : HEADPHONE_ACTIVE_VOLUME;
+    codec.setHPvol(headphone_volume, headphone_volume);
+}
+
 void bsp_audio_power_on_early() {
     pinMode(BoardConfig::AmplifierEnable, OUTPUT);
     digitalWrite(BoardConfig::AmplifierEnable, LOW);
@@ -93,7 +121,8 @@ bool bsp_audio_codec_init() {
             last_probe_result = probe_i2c_address(WM8978_ADDR);
             if ((last_probe_result == 0U) && codec.begin()) {
                 codec.setSPKvol(SPEAKER_VOLUME);
-                codec.setHPvol(HEADPHONE_VOLUME, HEADPHONE_VOLUME);
+                bsp_audio_apply_output_route(true);
+                bsp_audio_apply_codec_settings(0, 0, 0);
                 return true;
             }
         }
@@ -109,8 +138,8 @@ bool bsp_audio_codec_init() {
     return false;
 }
 
-bool bsp_audio_configure_i2s(Audio &audio) {
-    digitalWrite(BoardConfig::AmplifierEnable, LOW);
+bool bsp_audio_configure_i2s(Audio &audio, bool amplifier_enabled) {
+    bsp_audio_set_amplifier_enabled(false);
     const bool configured = audio.setPinout(BoardConfig::I2sBitClock,
                                             BoardConfig::I2sWordSelect,
                                             BoardConfig::I2sDataOut,
@@ -122,8 +151,9 @@ bool bsp_audio_configure_i2s(Audio &audio) {
     }
 
     delay(AMPLIFIER_SETTLE_MS);
-    digitalWrite(BoardConfig::AmplifierEnable, HIGH);
-    Serial.printf("[AUDIO] I2S ready, amplifier GPIO%u=HIGH\n",
-                  BoardConfig::AmplifierEnable);
+    bsp_audio_set_amplifier_enabled(amplifier_enabled);
+    Serial.printf("[AUDIO] I2S ready, amplifier GPIO%u=%s\n",
+                  BoardConfig::AmplifierEnable,
+                  amplifier_enabled ? "HIGH" : "LOW");
     return true;
 }

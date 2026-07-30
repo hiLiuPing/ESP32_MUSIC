@@ -254,14 +254,14 @@ void ui_popups_service(UiPage current_page) {
     }
 
     if (!home_active && poetry_visible) ui_poetry_popup_dismiss();
-    if (!settings.poetry_enabled && poetry_visible) ui_poetry_popup_dismiss();
+    if (settings.poetry_interval_min == 0U && poetry_visible) ui_poetry_popup_dismiss();
     if (poetry_visible &&
         now - poetry_started >=
             static_cast<uint32_t>(settings.poetry_duration_s) * 1000UL) {
         ui_poetry_popup_dismiss();
     }
     if (home_active && system_phase == SystemPopupPhase::Idle &&
-        settings.poetry_enabled && settings.poetry_interval_min != 0U &&
+        settings.poetry_interval_min != 0U &&
         static_cast<int32_t>(now - next_poetry) >= 0) {
         if (show_cached_poetry()) {
             next_poetry = now +

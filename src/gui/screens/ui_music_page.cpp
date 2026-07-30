@@ -11,13 +11,15 @@
 #include "task/task_system.h"
 
 namespace {
-constexpr uint8_t CONTROL_COUNT = 6;
+constexpr uint8_t CONTROL_COUNT = 7;
 constexpr uint8_t CONTROL_VOLUME = 0;
 constexpr uint8_t CONTROL_MODE = 1;
 constexpr uint8_t CONTROL_PREVIOUS = 2;
 constexpr uint8_t CONTROL_PLAY = 3;
 constexpr uint8_t CONTROL_NEXT = 4;
 constexpr uint8_t CONTROL_PLAYLIST = 5;
+constexpr uint8_t CONTROL_SETTINGS = 6;
+constexpr uint8_t AUDIO_ITEM_COUNT = 5;
 constexpr uint8_t PLAYLIST_ROWS = 7;
 constexpr uint32_t SPECTRUM_FRAME_MS = 80;
 constexpr uint8_t SPECTRUM_PEAK_HOLD_FRAMES = 2;
@@ -41,6 +43,7 @@ enum class MusicSubview : uint8_t {
     Main,
     Volume,
     Playlist,
+    AudioSettingsPage,
 };
 
 GuiEguiView view;
@@ -48,6 +51,10 @@ PlayerStatus player_status = {};
 MusicSubview subview = MusicSubview::Main;
 bool navigation_active = false;
 uint8_t selected_control = CONTROL_PLAY;
+uint8_t audio_selected = 0U;
+bool audio_editing = false;
+AudioSettings audio_draft = {};
+AudioSettings audio_saved = {};
 uint16_t selected_track = 0;
 uint16_t visible_track_start = 0;
 uint8_t displayed_spectrum[PLAYER_SPECTRUM_BANDS] = {};
@@ -194,8 +201,25 @@ void draw_playlist_icon(egui_canvas_t *canvas, int16_t cx, int16_t cy,
     }
 }
 
+void draw_settings_icon(egui_canvas_t *canvas, int16_t cx, int16_t cy,
+                        egui_color_t color) {
+    egui_canvas_draw_circle_basic(canvas, cx, cy, 7, 3, color, EGUI_ALPHA_100);
+    egui_canvas_draw_circle_fill_basic(canvas, cx, cy, 2,
+                                       color, EGUI_ALPHA_100);
+    constexpr int8_t offsets[8][2] = {
+        {0, -1}, {1, -1}, {1, 0}, {1, 1},
+        {0, 1}, {-1, 1}, {-1, 0}, {-1, -1},
+    };
+    for (const auto &offset : offsets) {
+        egui_canvas_draw_line(canvas,
+                              cx + offset[0] * 6, cy + offset[1] * 6,
+                              cx + offset[0] * 11, cy + offset[1] * 11,
+                              3, color, EGUI_ALPHA_100);
+    }
+}
+
 void draw_control(egui_canvas_t *canvas, uint8_t index) {
-    const int16_t cx = static_cast<int16_t>(32 + index * 64);
+    const int16_t cx = static_cast<int16_t>(27 + index * 55);
     constexpr int16_t cy = 148;
     const bool focused = navigation_active && selected_control == index;
     const int16_t radius = index == CONTROL_PLAY ? 19 : 16;
@@ -214,6 +238,7 @@ void draw_control(egui_canvas_t *canvas, uint8_t index) {
         case CONTROL_PLAY: draw_play_icon(canvas, cx, cy, color); break;
         case CONTROL_NEXT: draw_skip_icon(canvas, cx, cy, true, color); break;
         case CONTROL_PLAYLIST: draw_playlist_icon(canvas, cx, cy, color); break;
+        case CONTROL_SETTINGS: draw_settings_icon(canvas, cx, cy, color); break;
         default: break;
     }
 }
@@ -398,11 +423,59 @@ void draw_playlist(egui_canvas_t *canvas) {
     }
 }
 
+const char *audio_setting_label(uint8_t index) {
+    switch (index) {
+        case 0: return "VOLUME";
+        case 1: return "SPEAKER";
+        case 2: return "BASS";
+        case 3: return "TREBLE";
+        case 4: return "3D SURROUND";
+        default: return "";
+    }
+}
+
+void format_audio_setting(uint8_t index, char *out, size_t size) {
+    switch (index) {
+        case 0: std::snprintf(out, size, "%u / %u", audio_draft.volume,
+                              PLAYER_VOLUME_MAX); break;
+        case 1: std::snprintf(out, size, "%s",
+                              audio_draft.amplifier_enabled ? "ON" : "OFF"); break;
+        case 2: std::snprintf(out, size, "%+d DB", audio_draft.bass_db); break;
+        case 3: std::snprintf(out, size, "%+d DB", audio_draft.treble_db); break;
+        case 4: std::snprintf(out, size, "%u / 15", audio_draft.surround_depth); break;
+        default: out[0] = '\0'; break;
+    }
+}
+
+void draw_audio_settings(egui_canvas_t *canvas) {
+    gui_draw_page_background(canvas);
+    gui_draw_header(canvas, audio_editing ? "AUDIO EDIT" : "AUDIO SETTING");
+    for (uint8_t index = 0U; index < AUDIO_ITEM_COUNT; ++index) {
+        const int16_t y = static_cast<int16_t>(27 + index * 22);
+        const bool focused = navigation_active && index == audio_selected;
+        if (focused) {
+            egui_canvas_draw_rectangle_fill(canvas, 4, y - 2, 376, 20,
+                                            EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+        }
+        const egui_color_t color = focused ? EGUI_COLOR_WHITE : EGUI_COLOR_BLACK;
+        egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                              audio_setting_label(index), 12, y, color, EGUI_ALPHA_100);
+        char value[20] = {};
+        format_audio_setting(index, value, sizeof(value));
+        egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                              value, 270, y, color, EGUI_ALPHA_100);
+    }
+    if (navigation_active) {
+        gui_draw_text(canvas, 12, 153, audio_editing ? "MIDDLE SAVE" : "MIDDLE EDIT");
+    }
+}
+
 void draw(egui_canvas_t *canvas) {
     switch (subview) {
         case MusicSubview::Main: draw_main(canvas); break;
         case MusicSubview::Volume: draw_volume(canvas); break;
         case MusicSubview::Playlist: draw_playlist(canvas); break;
+        case MusicSubview::AudioSettingsPage: draw_audio_settings(canvas); break;
     }
 }
 
@@ -411,7 +484,7 @@ void init() {
         std::memset(&player_status, 0, sizeof(player_status));
         player_status.state = PlayerState::Initializing;
         player_status.volume = PLAYER_DEFAULT_VOLUME;
-        player_status.playback_mode = PlaybackMode::RepeatAll;
+        player_status.playback_mode = PlaybackMode::Shuffle;
     }
     gui_egui_view_init(&view, egui_port_core(), draw);
 }
@@ -420,6 +493,8 @@ void enter() {
     navigation_active = false;
     subview = MusicSubview::Main;
     selected_control = CONTROL_PLAY;
+    audio_selected = 0U;
+    audio_editing = false;
     selected_track = player_status.track_count == 0 ? 0 : player_status.track_index;
     visible_track_start = 0;
     clamp_playlist_window();
@@ -446,8 +521,12 @@ void exit() {
 void navigation_changed(bool active) {
     navigation_active = active;
     if (!active) {
+        if (subview == MusicSubview::AudioSettingsPage && audio_editing) {
+            (void)task_post_player_audio_settings(audio_saved, false);
+        }
         subview = MusicSubview::Main;
         selected_control = CONTROL_PLAY;
+        audio_editing = false;
     }
 }
 
@@ -522,17 +601,60 @@ void execute_control() {
             clamp_playlist_window();
             subview = MusicSubview::Playlist;
             break;
+        case CONTROL_SETTINGS:
+            audio_saved = AudioSettings{player_status.volume, player_status.playback_mode,
+                                        player_status.amplifier_enabled, player_status.bass_db,
+                                        player_status.treble_db, player_status.surround_depth};
+            audio_draft = audio_saved;
+            audio_selected = 0U;
+            audio_editing = false;
+            subview = MusicSubview::AudioSettingsPage;
+            break;
         default:
             break;
     }
 }
 
+void adjust_audio_setting(int direction) {
+    switch (audio_selected) {
+        case 0:
+            audio_draft.volume = static_cast<uint8_t>(constrain(
+                static_cast<int>(audio_draft.volume) + direction,
+                PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX));
+            break;
+        case 1:
+            audio_draft.amplifier_enabled = !audio_draft.amplifier_enabled;
+            break;
+        case 2:
+            audio_draft.bass_db = static_cast<int8_t>(constrain(
+                static_cast<int>(audio_draft.bass_db) + direction, -12, 12));
+            break;
+        case 3:
+            audio_draft.treble_db = static_cast<int8_t>(constrain(
+                static_cast<int>(audio_draft.treble_db) + direction, -12, 12));
+            break;
+        case 4:
+            audio_draft.surround_depth = static_cast<uint8_t>(constrain(
+                static_cast<int>(audio_draft.surround_depth) + direction, 0, 15));
+            break;
+        default: break;
+    }
+    (void)task_post_player_audio_settings(audio_draft, false);
+}
+
 bool key_consume(const KeyEvent &event) {
     if (event.id == KeyId::Middle && event.gesture == KeyGesture::LongPress &&
         subview != MusicSubview::Main) {
+        if (subview == MusicSubview::AudioSettingsPage && audio_editing) {
+            (void)task_post_player_audio_settings(audio_saved, false);
+            audio_draft = audio_saved;
+            audio_editing = false;
+        }
         selected_control = subview == MusicSubview::Volume
                                ? CONTROL_VOLUME
-                               : CONTROL_PLAYLIST;
+                               : (subview == MusicSubview::Playlist
+                                      ? CONTROL_PLAYLIST
+                                      : CONTROL_SETTINGS);
         subview = MusicSubview::Main;
         return true;
     }
@@ -548,6 +670,13 @@ bool key_consume(const KeyEvent &event) {
         } else if (subview == MusicSubview::Volume) {
             (void)task_post_player_command(PlayerCommandType::ChangeVolume,
                                            static_cast<int16_t>(direction));
+        } else if (subview == MusicSubview::AudioSettingsPage) {
+            if (audio_editing) {
+                adjust_audio_setting(direction);
+            } else {
+                audio_selected = static_cast<uint8_t>(
+                    (audio_selected + AUDIO_ITEM_COUNT + direction) % AUDIO_ITEM_COUNT);
+            }
         } else {
             const uint16_t old_selected = selected_track;
             const uint16_t old_window_start = visible_track_start;
@@ -563,6 +692,14 @@ bool key_consume(const KeyEvent &event) {
     }
     if (subview == MusicSubview::Main) {
         execute_control();
+    } else if (subview == MusicSubview::AudioSettingsPage) {
+        if (audio_editing) {
+            (void)task_post_player_audio_settings(audio_draft, true);
+            audio_saved = audio_draft;
+            audio_editing = false;
+        } else {
+            audio_editing = true;
+        }
     } else if (subview == MusicSubview::Playlist && player_status.track_count > 0) {
         (void)task_post_player_command(PlayerCommandType::PlaySelected,
                                        static_cast<int16_t>(selected_track));
@@ -681,6 +818,12 @@ bool update_status(const PlayerStatus &status) {
             return playback_context_changed ||
                    previous.track_index != status.track_index ||
                    previous.track_count != status.track_count;
+        case MusicSubview::AudioSettingsPage:
+            return playback_context_changed || previous.volume != status.volume ||
+                   previous.amplifier_enabled != status.amplifier_enabled ||
+                   previous.bass_db != status.bass_db ||
+                   previous.treble_db != status.treble_db ||
+                   previous.surround_depth != status.surround_depth;
     }
     return false;
 }

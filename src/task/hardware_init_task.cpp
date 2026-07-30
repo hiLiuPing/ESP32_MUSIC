@@ -1,5 +1,6 @@
 #include <Arduino.h>
 
+#include "app/audio_settings.h"
 #include "bsp/bsp_audio.h"
 #include "bsp/bsp_display.h"
 #include "bsp/bsp_storage.h"
@@ -73,6 +74,10 @@ void hardware_init_task(void *parameter) {
 
     Serial.println("[HW] WM8978 init");
     if (bsp_audio_codec_init()) {
+        const AudioSettings audio_settings = audio_settings_get();
+        bsp_audio_apply_codec_settings(audio_settings.bass_db,
+                                       audio_settings.treble_db,
+                                       audio_settings.surround_depth);
         Serial.println("[HW] WM8978 ready");
         xEventGroupSetBits(HardwareEventGroup, HW_EVENT_CODEC_READY);
     } else {
