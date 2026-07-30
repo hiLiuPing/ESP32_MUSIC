@@ -30,6 +30,7 @@ bool sd_ready = false;
 bool codec_ready = false;
 bool i2s_ready = false;
 bool track_started = false;
+uint32_t last_sleep_timer_ms = 0U;
 TickType_t last_status_tick = 0;
 TickType_t last_spectrum_tick = 0;
 
@@ -46,6 +47,7 @@ uint16_t shuffle_count = 0;
 uint16_t shuffle_cursor = 0;
 
 void publish(bool force = false);
+void clear_spectrum();
 
 void normalize_audio_settings(AudioSettings &settings) {
     settings.volume = static_cast<uint8_t>(
@@ -66,14 +68,53 @@ void normalize_audio_settings(AudioSettings &settings) {
 AudioSettings current_audio_settings() {
     return AudioSettings{status.volume, status.playback_mode,
                          status.amplifier_enabled, status.bass_db,
-                         status.treble_db, status.surround_depth};
+                         status.treble_db, status.surround_depth,
+                         status.sleep_timer_min};
 }
 
 void persist_runtime_audio_settings() {
     (void)audio_settings_update(current_audio_settings());
 }
 
-void apply_audio_settings(const AudioSettings &requested, bool persist) {
+void arm_sleep_timer(uint16_t minutes) {
+    status.sleep_timer_remaining_seconds = static_cast<uint32_t>(minutes) * 60UL;
+    last_sleep_timer_ms = millis();
+}
+
+void service_sleep_timer() {
+    const uint32_t now = millis();
+    if (last_sleep_timer_ms == 0U) {
+        last_sleep_timer_ms = now;
+    }
+    if (status.state != PlayerState::Playing ||
+        status.sleep_timer_remaining_seconds == 0U) {
+        last_sleep_timer_ms = now;
+        return;
+    }
+
+    const uint32_t elapsed_seconds = (now - last_sleep_timer_ms) / 1000UL;
+    if (elapsed_seconds == 0U) return;
+    last_sleep_timer_ms += elapsed_seconds * 1000UL;
+    if (elapsed_seconds < status.sleep_timer_remaining_seconds) {
+        status.sleep_timer_remaining_seconds -= elapsed_seconds;
+        return;
+    }
+
+    status.sleep_timer_remaining_seconds = 0U;
+    audio.stopSong();
+    eof_received = false;
+    track_started = false;
+    status.elapsed_seconds = 0U;
+    status.duration_seconds = 0U;
+    status.state = PlayerState::Stopped;
+    status.error = PlayerError::None;
+    clear_spectrum();
+    Serial.println("[PLAYER] sleep timer expired, playback stopped");
+    publish(true);
+}
+
+void apply_audio_settings(const AudioSettings &requested, bool persist,
+                          bool restart_sleep_timer) {
     AudioSettings settings = requested;
     normalize_audio_settings(settings);
     status.volume = settings.volume;
@@ -82,6 +123,7 @@ void apply_audio_settings(const AudioSettings &requested, bool persist) {
     status.bass_db = settings.bass_db;
     status.treble_db = settings.treble_db;
     status.surround_depth = settings.surround_depth;
+    status.sleep_timer_min = settings.sleep_timer_min;
     audio.setVolume(status.volume);
     if (codec_ready) {
         bsp_audio_apply_codec_settings(status.bass_db, status.treble_db,
@@ -92,6 +134,9 @@ void apply_audio_settings(const AudioSettings &requested, bool persist) {
                                     status.amplifier_enabled);
     if (persist) {
         (void)audio_settings_update(settings);
+        if (restart_sleep_timer) {
+            arm_sleep_timer(settings.sleep_timer_min);
+        }
     }
     publish(true);
 }
@@ -289,6 +334,7 @@ void rescan_library() {
     eof_received = false;
     status.elapsed_seconds = 0;
     status.duration_seconds = 0;
+    status.sleep_timer_remaining_seconds = 0U;
     status.error = PlayerError::None;
     clear_spectrum();
 
@@ -437,7 +483,8 @@ void handle_command(const PlayerCommand &command) {
             break;
         case PlayerCommandType::ApplyAudioSettings:
             apply_audio_settings(command.audio_settings,
-                                 command.persist_audio_settings);
+                                 command.persist_audio_settings,
+                                 command.restart_sleep_timer);
             break;
         case PlayerCommandType::Rescan: rescan_library(); break;
     }
@@ -472,6 +519,9 @@ void player_task(void *parameter) {
     status.bass_db = saved_audio_settings.bass_db;
     status.treble_db = saved_audio_settings.treble_db;
     status.surround_depth = saved_audio_settings.surround_depth;
+    status.sleep_timer_min = saved_audio_settings.sleep_timer_min;
+    status.sleep_timer_remaining_seconds = 0U;
+    last_sleep_timer_ms = millis();
     init_spectrum();
     publish(true);
 
@@ -498,6 +548,8 @@ void player_task(void *parameter) {
         while (xQueueReceive(PlayerCommandQueue, &command, 0) == pdTRUE) {
             handle_command(command);
         }
+
+        service_sleep_timer();
 
         if (status.state == PlayerState::Playing) {
             audio.loop();

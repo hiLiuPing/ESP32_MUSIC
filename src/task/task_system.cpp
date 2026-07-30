@@ -95,11 +95,13 @@ bool task_post_player_command(PlayerCommandType type, int16_t value) {
     return posted;
 }
 
-bool task_post_player_audio_settings(const AudioSettings &settings, bool persist) {
+bool task_post_player_audio_settings(const AudioSettings &settings, bool persist,
+                                     bool restart_sleep_timer) {
     PlayerCommand command = {};
     command.type = PlayerCommandType::ApplyAudioSettings;
     command.audio_settings = settings;
     command.persist_audio_settings = persist;
+    command.restart_sleep_timer = restart_sleep_timer;
     const bool posted = (PlayerCommandQueue != nullptr) &&
                         (xQueueSend(PlayerCommandQueue, &command, pdMS_TO_TICKS(20)) == pdTRUE);
     if (!posted) {

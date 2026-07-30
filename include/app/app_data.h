@@ -18,6 +18,11 @@ enum WeatherScene_t : uint8_t {
 
 using HomeWeatherScene = WeatherScene_t;
 
+constexpr size_t WEATHER_TEXT_LENGTH = 32U;
+constexpr size_t WEATHER_VALUE_LENGTH = 16U;
+constexpr size_t WEATHER_WIND_LENGTH = 40U;
+constexpr size_t WEATHER_DATE_LENGTH = 11U;
+
 struct AppTime {
     uint32_t version;
     uint16_t year;
@@ -38,10 +43,23 @@ struct HomeWeatherData {
     int16_t high_c;
     int16_t low_c;
     int16_t pm25;
+    int16_t temperature_c;
+    uint8_t humidity;
+    int16_t aqi;
     uint16_t icon_id;
     WeatherScene_t scene;
     bool valid;
     bool stale;
+    char text[WEATHER_TEXT_LENGTH];
+    char feels_like[WEATHER_VALUE_LENGTH];
+    char wind[WEATHER_WIND_LENGTH];
+    char visibility[WEATHER_VALUE_LENGTH];
+    char pm10[WEATHER_VALUE_LENGTH];
+    char pm2p5[WEATHER_VALUE_LENGTH];
+    char no2[WEATHER_VALUE_LENGTH];
+    char so2[WEATHER_VALUE_LENGTH];
+    char co[WEATHER_VALUE_LENGTH];
+    char o3[WEATHER_VALUE_LENGTH];
 };
 
 struct WeatherForecastDay {
@@ -55,6 +73,8 @@ struct WeatherForecastDay {
     WeatherScene_t scene;
     bool valid;
     bool stale;
+    char text_day[WEATHER_TEXT_LENGTH];
+    char date_text[WEATHER_DATE_LENGTH];
 };
 
 constexpr uint8_t APP_WEATHER_FORECAST_DAYS = 7U;

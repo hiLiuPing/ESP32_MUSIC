@@ -19,7 +19,8 @@ constexpr uint8_t CONTROL_PLAY = 3;
 constexpr uint8_t CONTROL_NEXT = 4;
 constexpr uint8_t CONTROL_PLAYLIST = 5;
 constexpr uint8_t CONTROL_SETTINGS = 6;
-constexpr uint8_t AUDIO_ITEM_COUNT = 5;
+constexpr uint8_t AUDIO_ITEM_COUNT = 6;
+constexpr uint8_t AUDIO_ITEM_SLEEP_TIMER = 5;
 constexpr uint8_t PLAYLIST_ROWS = 7;
 constexpr uint32_t SPECTRUM_FRAME_MS = 80;
 constexpr uint8_t SPECTRUM_PEAK_HOLD_FRAMES = 2;
@@ -317,6 +318,17 @@ void draw_main(egui_canvas_t *canvas) {
                                       EGUI_COLOR_BLACK, EGUI_ALPHA_100);
         draw_right_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
                         duration, 268, TIME_Y, 100, 18);
+        if (player_status.state == PlayerState::Playing &&
+            player_status.sleep_timer_remaining_seconds > 0U) {
+            char sleep_time[12] = {};
+            char sleep_label[24] = {};
+            gui_format_time(player_status.sleep_timer_remaining_seconds,
+                            sleep_time, sizeof(sleep_time));
+            std::snprintf(sleep_label, sizeof(sleep_label), "SLEEP %s", sleep_time);
+            draw_centered_text(canvas,
+                               EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                               sleep_label, 128, TIME_Y, 128, 18);
+        }
     }
 
     if (work_intersects(canvas, CONTROLS_REGION)) {
@@ -430,6 +442,7 @@ const char *audio_setting_label(uint8_t index) {
         case 2: return "BASS";
         case 3: return "TREBLE";
         case 4: return "3D SURROUND";
+        case 5: return "SLEEP TIMER";
         default: return "";
     }
 }
@@ -443,6 +456,13 @@ void format_audio_setting(uint8_t index, char *out, size_t size) {
         case 2: std::snprintf(out, size, "%+d DB", audio_draft.bass_db); break;
         case 3: std::snprintf(out, size, "%+d DB", audio_draft.treble_db); break;
         case 4: std::snprintf(out, size, "%u / 15", audio_draft.surround_depth); break;
+        case 5:
+            if (audio_draft.sleep_timer_min == 0U) {
+                std::snprintf(out, size, "OFF");
+            } else {
+                std::snprintf(out, size, "%u MIN", audio_draft.sleep_timer_min);
+            }
+            break;
         default: out[0] = '\0'; break;
     }
 }
@@ -485,6 +505,7 @@ void init() {
         player_status.state = PlayerState::Initializing;
         player_status.volume = PLAYER_DEFAULT_VOLUME;
         player_status.playback_mode = PlaybackMode::Shuffle;
+        player_status.sleep_timer_min = AUDIO_SLEEP_TIMER_DEFAULT_MIN;
     }
     gui_egui_view_init(&view, egui_port_core(), draw);
 }
@@ -604,7 +625,8 @@ void execute_control() {
         case CONTROL_SETTINGS:
             audio_saved = AudioSettings{player_status.volume, player_status.playback_mode,
                                         player_status.amplifier_enabled, player_status.bass_db,
-                                        player_status.treble_db, player_status.surround_depth};
+                                        player_status.treble_db, player_status.surround_depth,
+                                        player_status.sleep_timer_min};
             audio_draft = audio_saved;
             audio_selected = 0U;
             audio_editing = false;
@@ -636,6 +658,23 @@ void adjust_audio_setting(int direction) {
         case 4:
             audio_draft.surround_depth = static_cast<uint8_t>(constrain(
                 static_cast<int>(audio_draft.surround_depth) + direction, 0, 15));
+            break;
+        case AUDIO_ITEM_SLEEP_TIMER:
+            if (direction > 0) {
+                audio_draft.sleep_timer_min =
+                    audio_draft.sleep_timer_min == 0U
+                        ? AUDIO_SLEEP_TIMER_MIN
+                        : (audio_draft.sleep_timer_min >= AUDIO_SLEEP_TIMER_MAX
+                               ? 0U
+                               : static_cast<uint16_t>(audio_draft.sleep_timer_min + 30U));
+            } else {
+                audio_draft.sleep_timer_min =
+                    audio_draft.sleep_timer_min == 0U
+                        ? AUDIO_SLEEP_TIMER_MAX
+                        : (audio_draft.sleep_timer_min <= AUDIO_SLEEP_TIMER_MIN
+                               ? 0U
+                               : static_cast<uint16_t>(audio_draft.sleep_timer_min - 30U));
+            }
             break;
         default: break;
     }
@@ -694,7 +733,8 @@ bool key_consume(const KeyEvent &event) {
         execute_control();
     } else if (subview == MusicSubview::AudioSettingsPage) {
         if (audio_editing) {
-            (void)task_post_player_audio_settings(audio_draft, true);
+            (void)task_post_player_audio_settings(
+                audio_draft, true, audio_selected == AUDIO_ITEM_SLEEP_TIMER);
             audio_saved = audio_draft;
             audio_editing = false;
         } else {
@@ -808,7 +848,9 @@ bool update_status(const PlayerStatus &status) {
                 return true;
             }
             if (previous.elapsed_seconds != status.elapsed_seconds ||
-                previous.duration_seconds != status.duration_seconds) {
+                previous.duration_seconds != status.duration_seconds ||
+                previous.sleep_timer_remaining_seconds !=
+                    status.sleep_timer_remaining_seconds) {
                 egui_view_invalidate_region(EGUI_VIEW_OF(&view), &PROGRESS_REGION);
             }
             return false;
@@ -823,7 +865,8 @@ bool update_status(const PlayerStatus &status) {
                    previous.amplifier_enabled != status.amplifier_enabled ||
                    previous.bass_db != status.bass_db ||
                    previous.treble_db != status.treble_db ||
-                   previous.surround_depth != status.surround_depth;
+                   previous.surround_depth != status.surround_depth ||
+                   previous.sleep_timer_min != status.sleep_timer_min;
     }
     return false;
 }

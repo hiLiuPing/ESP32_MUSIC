@@ -136,20 +136,43 @@ String html_escape(const String &value) {
     out.replace("<", "&lt;");
     out.replace(">", "&gt;");
     out.replace("\"", "&quot;");
+    out.replace("'", "&#39;");
     return out;
 }
 
 void handle_root() {
-    String html = F("<!doctype html><html lang='zh'><meta charset='utf-8'>"
+    String html = F("<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
                     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                    "<title>DuduClock WiFi</title><style>body{font:16px sans-serif;max-width:520px;margin:24px auto;padding:0 16px}"
-                    "input,button{box-sizing:border-box;width:100%;padding:12px;margin:6px 0}button{background:#111;color:white;border:0}</style>"
-                    "<h2>DuduClock WiFi</h2><form method='post' action='/configwifi'>"
-                    "<label>WiFi</label><select name='ssid'>");
+                    "<title>DuduClock 配网</title><style>"
+                    "*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f5f7fb;"
+                    "font-family:Arial,'Microsoft YaHei',sans-serif;color:#202124;padding:24px 14px}"
+                    ".card{width:min(560px,100%);margin:0 auto;background:#fff;border-radius:14px;"
+                    "padding:24px;box-shadow:0 8px 30px rgba(0,0,0,.10)}h1{text-align:center;"
+                    "font-size:25px;margin:0 0 8px}p{color:#6b7280;text-align:center;margin:0 0 22px;"
+                    "line-height:1.5}.field{margin:14px 0}.field label{display:block;font-size:14px;"
+                    "font-weight:600;margin-bottom:7px}.field input,.field select{width:100%;height:44px;"
+                    "border:1px solid #d1d5db;border-radius:8px;padding:0 12px;font-size:16px;"
+                    "background:#fff}.hint{font-size:12px;color:#6b7280;margin-top:5px}"
+                    "button{width:100%;height:46px;border:0;border-radius:8px;background:#2563eb;"
+                    "color:#fff;font-size:16px;font-weight:600;margin-top:12px}"
+                    "button:active{background:#1d4ed8}.required{color:#dc2626}"
+                    "</style></head><body><main class='card'><h1>DuduClock 配网</h1>"
+                    "<p>配置 WiFi 和城市后，设备会自动完成对时并获取天气。</p>"
+                    "<form method='post' action='/configwifi' accept-charset='UTF-8' onsubmit='return validateForm()'>"
+                    "<div class='field'><label for='ssid'>WiFi 名称 <span class='required'>*</span></label>"
+                    "<select name='ssid' id='ssid' required>");
     html += scan_options;
-    html += F("</select><input name='pass' type='password' placeholder='WiFi password' required>"
-               "<input name='city' placeholder='City' required><input name='adm' placeholder='Province (optional)'>"
-               "<button type='submit'>Save</button></form></html>");
+    html += F("</select></div><div class='field'><label for='pass'>WiFi 密码 <span class='required'>*</span></label>"
+               "<input name='pass' id='pass' type='password' placeholder='请输入 WiFi 密码' required>"
+               "</div><div class='field'><label for='city'>城市名称 <span class='required'>*</span></label>"
+               "<input name='city' id='city' placeholder='例如：江阴' required><div class='hint'>无需填写“市/区/县”</div>"
+               "</div><div class='field'><label for='adm'>上级行政区划</label>"
+               "<input name='adm' id='adm' placeholder='用于区分重名城市，可不填'></div>"
+               "<button type='submit'>保存并开始对时</button></form></main>"
+               "<script>function validateForm(){var s=document.getElementById('ssid').value;"
+               "var p=document.getElementById('pass').value.trim();var c=document.getElementById('city').value.trim();"
+               "if(!s){alert('请选择要连接的 WiFi');return false}if(!p){alert('请输入 WiFi 密码');return false}"
+               "if(!c){alert('请输入城市名称');return false}return true}</script></body></html>");
     server.send(200, "text/html", html);
 }
 
@@ -262,14 +285,18 @@ bool weather_network_save_profile(const String &new_ssid, const String &new_pass
 bool weather_network_start_ap() {
     ensure_initialized();
     if (ap_active) return true;
-    WiFi.mode(WIFI_AP);
+    WiFi.mode(WIFI_AP_STA);
     WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_NETMASK);
     if (!WiFi.softAP(AP_SSID)) return false;
     const int found = WiFi.scanNetworks(false, true);
     scan_options = "<option value=''>Select network</option>";
     for (int i = 0; i < found; ++i) {
         const String name = WiFi.SSID(i);
-        if (!name.isEmpty()) scan_options += "<option value='" + html_escape(name) + "'>" + html_escape(name) + "</option>";
+        if (!name.isEmpty()) {
+            const int32_t rssi = WiFi.RSSI(i);
+            scan_options += "<option value='" + html_escape(name) + "'>" + html_escape(name) +
+                             " (" + String(rssi) + " dBm)</option>";
+        }
     }
     WiFi.scanDelete();
     server.on("/", HTTP_GET, handle_root);

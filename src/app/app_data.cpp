@@ -266,15 +266,17 @@ void app_data_set_weather_forecast(const WeatherForecastDay *days, uint8_t count
     if (lock_snapshot(portMAX_DELAY)) {
         std::memcpy(injected_forecast, days,
                     static_cast<size_t>(count) * sizeof(WeatherForecastDay));
+        const uint32_t next_version = forecast_version == 0U ? injected_forecast_version + 1U
+                                                             : forecast_version;
         for (uint8_t i = 0U; i < count; ++i) {
+            injected_forecast[i].version = next_version;
             injected_forecast[i].stale = stale;
             injected_forecast[i].valid = true;
         }
         for (uint8_t i = count; i < APP_WEATHER_FORECAST_DAYS; ++i) {
             injected_forecast[i] = {};
         }
-        injected_forecast_version = forecast_version == 0U ? injected_forecast_version + 1U
-                                                            : forecast_version;
+        injected_forecast_version = next_version;
         rebuild_locked();
         unlock_snapshot();
     }

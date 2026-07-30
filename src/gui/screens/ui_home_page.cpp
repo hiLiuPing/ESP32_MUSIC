@@ -14,6 +14,7 @@
 #include "gui/resources/icons.h"
 #include "gui/page.h"
 #include "gui/ui_heiti_font.h"
+#include "task/task_system.h"
 
 #define UI_SCREEN_W EGUI_CONFIG_SCREEN_WIDTH
 #define UI_SCREEN_H EGUI_CONFIG_SCREEN_HEIGHT
@@ -1319,8 +1320,34 @@ void ui_HomePage_screen_destroy(void)
     }
 }
 
-static bool ui_HomePage_key_consume(const KeyEvent &)
+static bool ui_HomePage_key_consume(const KeyEvent &event)
 {
+    if (event.gesture == KeyGesture::DoubleClick) {
+        if (event.id == KeyId::Middle)
+        {
+            return task_post_player_command(PlayerCommandType::Toggle);
+        }
+        if (event.id == KeyId::Left)
+        {
+            return task_post_player_command(PlayerCommandType::Previous);
+        }
+        if (event.id == KeyId::Right)
+        {
+            return task_post_player_command(PlayerCommandType::Next);
+        }
+    }
+
+    if (event.gesture == KeyGesture::LongPress) {
+        if (event.id == KeyId::Left)
+        {
+            return task_post_player_command(PlayerCommandType::ChangeVolume, -1);
+        }
+        if (event.id == KeyId::Right)
+        {
+            return task_post_player_command(PlayerCommandType::ChangeVolume, 1);
+        }
+    }
+
     return false;
 }
 

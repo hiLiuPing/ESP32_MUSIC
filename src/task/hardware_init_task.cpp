@@ -35,6 +35,16 @@ void hardware_init_task(void *parameter) {
 
     log_psram_status();
 
+    // Bring the display up first so the GUI can present Boot while the
+    // storage and audio devices continue initializing in this task.
+    Serial.println("[HW] display init");
+    if (bsp_display_init()) {
+        xEventGroupSetBits(HardwareEventGroup, HW_EVENT_DISPLAY_READY);
+        if (GuiWakeSemaphore != nullptr) {
+            xSemaphoreGive(GuiWakeSemaphore);
+        }
+    }
+
     Serial.println("[HW] LittleFS init");
     const bool littlefs_ready = bsp_littlefs_init();
     if (littlefs_ready) {
@@ -64,12 +74,6 @@ void hardware_init_task(void *parameter) {
         }
     } else {
         Serial.println("[HW] LittleFS resource sync skipped");
-    }
-
-    // Publish display readiness only after LittleFS resources are stable.
-    Serial.println("[HW] display init");
-    if (bsp_display_init()) {
-        xEventGroupSetBits(HardwareEventGroup, HW_EVENT_DISPLAY_READY);
     }
 
     Serial.println("[HW] WM8978 init");

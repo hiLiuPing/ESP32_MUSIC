@@ -2,6 +2,8 @@
 
 #include <cstdio>
 
+#include "anim/egui_animation_value.h"
+#include "anim/egui_interpolator_anticipate_overshoot.h"
 #include "app/settings_app.h"
 #include "gui/egui_port.h"
 #include "gui/gui_common.h"
@@ -14,7 +16,11 @@ uint8_t selected = 0U;
 bool editing = false;
 bool navigation_active = false;
 bool last_provisioning = false;
+int16_t selection_box_y = 25;
+egui_animation_value_t selection_animation = {};
+egui_interpolator_anticipate_overshoot_t selection_interpolator = {};
 constexpr uint8_t ITEM_COUNT = 5U;
+constexpr uint16_t SELECTION_ANIMATION_MS = 240U;
 
 const char *labels[ITEM_COUNT] = {"POETRY POPUP", "POETRY DURATION", "WEATHER SYNC", "WIFI CONFIG", "SCREEN SLEEP"};
 
@@ -26,6 +32,29 @@ uint16_t adjust_interval(uint16_t value, int delta) {
     if (next < 30) return 30U;
     if (next > 300) return 300U;
     return static_cast<uint16_t>(next);
+}
+
+void selection_animation_on_value(egui_animation_t *, int32_t value) {
+    selection_box_y = static_cast<int16_t>(value);
+    egui_view_invalidate_full(EGUI_VIEW_OF(&view));
+}
+
+void animate_selection_to(uint8_t item) {
+    const int16_t target_y = static_cast<int16_t>(25 + item * 22);
+    if (selection_box_y == target_y) return;
+
+    egui_animation_stop(EGUI_ANIM_OF(&selection_animation));
+    egui_animation_value_init(EGUI_ANIM_OF(&selection_animation));
+    egui_animation_value_set_range(&selection_animation, selection_box_y, target_y);
+    egui_animation_value_set_on_value(&selection_animation, selection_animation_on_value);
+    egui_animation_target_view_set(EGUI_ANIM_OF(&selection_animation), EGUI_VIEW_OF(&view));
+    egui_animation_duration_set(EGUI_ANIM_OF(&selection_animation), SELECTION_ANIMATION_MS);
+    egui_interpolator_anticipate_overshoot_init(EGUI_INTERP_OF(&selection_interpolator));
+    egui_interpolator_anticipate_overshoot_tension_set(
+        EGUI_INTERP_OF(&selection_interpolator), EGUI_FLOAT_VALUE(0.7f));
+    egui_animation_interpolator_set(EGUI_ANIM_OF(&selection_animation),
+                                    EGUI_INTERP_OF(&selection_interpolator));
+    egui_animation_start(EGUI_ANIM_OF(&selection_animation));
 }
 
 void format_value(uint8_t i, char *out, size_t size) {
@@ -55,8 +84,11 @@ void draw(egui_canvas_t *canvas) {
         const uint8_t i = first + row;
         const int16_t y = static_cast<int16_t>(27 + row * 22);
         const bool focused = navigation_active && i == selected;
-        if (focused) egui_canvas_draw_rectangle_fill(canvas, 4, y - 2, 376, 20, EGUI_COLOR_BLACK, EGUI_ALPHA_100);
-        const egui_color_t color = focused ? EGUI_COLOR_WHITE : EGUI_COLOR_BLACK;
+        const egui_color_t color = EGUI_COLOR_BLACK;
+        if (focused) {
+            egui_canvas_draw_round_rectangle(canvas, 4, selection_box_y, 376, 20, 5, 1,
+                                             EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+        }
         egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4), labels[i], 12, y, color, EGUI_ALPHA_100);
         char value[20] = {};
         format_value(i, value, sizeof(value));
@@ -83,8 +115,21 @@ void adjust(int delta) {
     }
 }
 
-void init() { gui_egui_view_init(&view, egui_port_core(), draw); settings = settings_app_get(); last_provisioning = weather_sync_is_provisioning(); }
-void enter() { settings = settings_app_get(); selected = 0U; editing = false; navigation_active = false; last_provisioning = weather_sync_is_provisioning(); }
+void init() {
+    gui_egui_view_init(&view, egui_port_core(), draw);
+    settings = settings_app_get();
+    selection_box_y = 25;
+    last_provisioning = weather_sync_is_provisioning();
+}
+void enter() {
+    egui_animation_stop(EGUI_ANIM_OF(&selection_animation));
+    settings = settings_app_get();
+    selected = 0U;
+    selection_box_y = 25;
+    editing = false;
+    navigation_active = false;
+    last_provisioning = weather_sync_is_provisioning();
+}
 void exit() {}
 void navigation_changed(bool active) {
     navigation_active = active;
@@ -114,8 +159,16 @@ bool key_consume(const KeyEvent &event) {
         Serial.printf("[SETTING] enter item=%u\n", selected);
         return true;
     }
-    if (event.id == KeyId::Left && event.gesture == KeyGesture::Click) { selected = static_cast<uint8_t>((selected + ITEM_COUNT - 1U) % ITEM_COUNT); return true; }
-    if (event.id == KeyId::Right && event.gesture == KeyGesture::Click) { selected = static_cast<uint8_t>((selected + 1U) % ITEM_COUNT); return true; }
+    if (event.id == KeyId::Left && event.gesture == KeyGesture::Click) {
+        selected = static_cast<uint8_t>((selected + ITEM_COUNT - 1U) % ITEM_COUNT);
+        animate_selection_to(selected);
+        return true;
+    }
+    if (event.id == KeyId::Right && event.gesture == KeyGesture::Click) {
+        selected = static_cast<uint8_t>((selected + 1U) % ITEM_COUNT);
+        animate_selection_to(selected);
+        return true;
+    }
     return false;
 }
 bool service() {

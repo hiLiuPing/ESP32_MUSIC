@@ -25,8 +25,15 @@ void sync_timer_callback(TimerHandle_t timer) {
 
 template <typename Callable>
 bool retry_call(const char *name, Callable callable) {
+    Serial.printf("[WEATHER] %s start (max=%u)\n", name, MAX_RETRIES);
     for (uint8_t attempt = 0U; attempt < MAX_RETRIES; ++attempt) {
-        if (callable()) return true;
+        if (callable()) {
+            Serial.printf("[WEATHER] %s success attempt=%u\n", name,
+                          static_cast<unsigned>(attempt + 1U));
+            return true;
+        }
+        Serial.printf("[WEATHER] %s attempt=%u failed\n", name,
+                      static_cast<unsigned>(attempt + 1U));
         if (attempt + 1U < MAX_RETRIES) vTaskDelay(pdMS_TO_TICKS(RETRY_DELAY_MS));
     }
     Serial.printf("[WEATHER] %s failed after %u attempts\n", name, MAX_RETRIES);
@@ -55,8 +62,15 @@ void mark_sync_failure(bool ntp_ok, bool weather_ok) {
 }
 
 bool perform_sync() {
-    if (!weather_network_has_profiles()) return false;
+    Serial.println("[WEATHER] sync begin");
+    if (!weather_network_has_profiles()) {
+        Serial.println("[WEATHER] sync skipped: no saved WiFi profile");
+        weather_network_disconnect();
+        mark_sync_failure(false, false);
+        return false;
+    }
     if (!retry_call("WiFi", []() { return weather_network_connect(10000U); })) {
+        weather_network_disconnect();
         mark_sync_failure(false, false);
         return false;
     }
@@ -71,39 +85,61 @@ bool perform_sync() {
 
     WeatherNetworkProfile profile = {};
     bool location_ok = weather_network_get_active(&profile);
+    Serial.printf("[WEATHER] active profile=%d ssid=%s city=%s location=%s lat=%s lon=%s\n",
+                  location_ok ? 1 : 0, profile.ssid.c_str(), profile.city.c_str(),
+                  profile.location.c_str(), profile.lat.c_str(), profile.lon.c_str());
     if (location_ok && profile.location.isEmpty()) {
         location_ok = retry_call("City ID", [&profile]() {
             return weather_service_resolve_location(&profile);
         });
     }
 
-    uint16_t icon_id = 0U;
-    WeatherScene_t scene = WEATHER_SCENE_UNKNOWN;
+    AppDataSnapshot snapshot = {};
+    (void)app_data_get_snapshot(&snapshot);
+    HomeWeatherData weather = snapshot.weather;
+
     const bool now_ok = location_ok && retry_call("Current weather", [&]() {
-        return weather_service_query_now(&icon_id, &scene);
+        HomeWeatherData candidate = weather;
+        if (!weather_service_query_now(&candidate)) return false;
+        weather = candidate;
+        return true;
     });
     WeatherServiceForecast forecast = {};
     const bool forecast_ok = location_ok && retry_call("Forecast", [&]() {
         return weather_service_query_forecast(&forecast);
     });
-    int16_t pm25 = 0;
     const bool air_ok = location_ok && retry_call("Air quality", [&]() {
-        return weather_service_query_air(&pm25);
+        HomeWeatherData candidate = weather;
+        if (!weather_service_query_air(&candidate)) return false;
+        weather = candidate;
+        return true;
     });
 
-    AppDataSnapshot snapshot = {};
-    (void)app_data_get_snapshot(&snapshot);
-    HomeWeatherData weather = snapshot.weather;
+    Serial.printf("[WEATHER] stage summary ntp=%d city=%d current=%d forecast=%d air=%d\n",
+                  ntp_ok ? 1 : 0, location_ok ? 1 : 0, now_ok ? 1 : 0,
+                  forecast_ok ? 1 : 0, air_ok ? 1 : 0);
+
     if (forecast_ok) {
         weather.high_c = forecast.days[0].high_c;
         weather.low_c = forecast.days[0].low_c;
-        app_data_set_weather_forecast(forecast.days, APP_WEATHER_FORECAST_DAYS);
+        app_data_set_weather_forecast(forecast.days, APP_WEATHER_FORECAST_DAYS, 0U,
+                                      !(now_ok && air_ok));
+        WeatherForecastDay stored[APP_WEATHER_FORECAST_DAYS] = {};
+        uint32_t stored_version = 0U;
+        if (app_data_get_weather_forecast(stored, APP_WEATHER_FORECAST_DAYS,
+                                           &stored_version)) {
+            Serial.printf("[WEATHER] forecast stored version=%lu day0=%04u-%02u-%02u icon=%u high=%d low=%d\n",
+                          static_cast<unsigned long>(stored_version),
+                          static_cast<unsigned>(stored[0].year),
+                          static_cast<unsigned>(stored[0].month),
+                          static_cast<unsigned>(stored[0].day),
+                          static_cast<unsigned>(stored[0].icon_id),
+                          static_cast<int>(stored[0].high_c),
+                          static_cast<int>(stored[0].low_c));
+        } else {
+            Serial.println("[WEATHER] forecast store readback failed");
+        }
     }
-    if (now_ok) {
-        weather.icon_id = icon_id;
-        weather.scene = scene;
-    }
-    if (air_ok) weather.pm25 = pm25;
     const bool weather_ok = now_ok || forecast_ok || air_ok;
     if (weather_ok) {
         weather.valid = true;
@@ -115,10 +151,12 @@ bool perform_sync() {
     }
     weather_network_disconnect();
     if (!ntp_ok || !location_ok || !now_ok || !forecast_ok || !air_ok) {
+        Serial.println("[WEATHER] sync completed with failures");
         mark_sync_failure(ntp_ok, weather_ok);
         return false;
     }
     notify_gui();
+    Serial.println("[WEATHER] sync completed successfully");
     Serial.println("[WEATHER] network sync complete");
     return true;
 }
