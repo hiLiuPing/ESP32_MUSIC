@@ -39,7 +39,18 @@ vol+
 vol-
 rescan
 status
+home-demo auto
+home-demo pause
+home-demo next
+home-demo prev
+home-demo status
+home-demo 1..27
 ```
+
+`HOME_DEMO_ENABLE` in `include/app/home_demo.h` is enabled by default for Home
+scene testing. It cycles through the 27 time/weather scenes every two seconds.
+Manual scene selection pauses the cycle; `home-demo auto` resumes it. Set the
+macro to `0` for normal RTC and network weather operation.
 
 Physical keys use two navigation levels. After switching pages with left and
 right, click the middle key to enter that page's controls. While inside a page,

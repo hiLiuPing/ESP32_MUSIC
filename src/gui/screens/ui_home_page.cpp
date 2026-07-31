@@ -160,7 +160,9 @@ static ST7305QuantizeMode s_home_previous_quantize_mode = ST7305QuantizeMode::Ba
 static bool s_home_quantize_mode_saved = false;
 static uint32_t s_home_scene_tick = 0U;
 static uint32_t s_home_status_tick = 0U;
+static uint32_t s_home_top_carousel_tick = 0U;
 static uint32_t s_home_status_version = 0xFFFFFFFFU;
+static uint8_t s_home_top_carousel_index = 0U;
 static ui_home_scene_state_t s_home_scene_state;
 static ui_home_sky_state_t s_home_sky_state;
 static ui_home_weather_state_t s_home_weather_state;
@@ -171,14 +173,12 @@ static ui_home_style_t s_home_render_style;
 static WeatherScene_t s_home_render_scene = WEATHER_SCENE_UNKNOWN;
 static uint32_t s_home_random_state = 0x6D2B79F5U;
 static const egui_font_t *s_home_heiti_16 = NULL;
-static const egui_font_t *s_home_heiti_18 = NULL;
 
 static void ui_HomePage_on_draw(egui_view_t *self);
 static void ui_HomePage_draw_scene(egui_canvas_t *canvas);
 static void ui_HomePage_draw_status(egui_canvas_t *canvas,
                                     const DataApp_HomeStatus_t *status,
-                                    uint32_t top_text_rgb,
-                                    uint32_t ground_text_rgb);
+                                    uint32_t top_text_rgb);
 static void ui_HomePage_timer_cb(egui_timer_t *timer);
 static void ui_HomePage_sky_reset(uint32_t now);
 static void ui_HomePage_sky_update(egui_view_t *view, uint32_t now);
@@ -192,7 +192,7 @@ static void ui_HomePage_update_render_snapshot(const DataApp_HomeStatus_t *statu
 static uint8_t ui_HomePage_battery_update(const DataApp_HomeStatus_t *status, uint32_t now, uint8_t restart);
 static void ui_HomePage_draw_battery(egui_canvas_t *canvas,
                                      const DataApp_HomeStatus_t *status,
-                                     uint32_t ground_text_rgb);
+                                     uint32_t top_text_rgb);
 static uint8_t ui_HomePage_canvas_intersects(egui_canvas_t *canvas,
                                               egui_dim_t x,
                                               egui_dim_t y,
@@ -208,7 +208,12 @@ static uint8_t ui_HomePage_canvas_intersects(egui_canvas_t *canvas,
 #define HOME_STATUS_TOP_H WEATHER_ICON_SIZE
 #define HOME_STATUS_WEATHER_ICON_X (UI_SCREEN_W - WEATHER_ICON_SIZE + 5)
 #define HOME_STATUS_WEATHER_ICON_Y -10
-#define HOME_BOTTOM_STATUS_Y 138
+#define HOME_STATUS_CAROUSEL_X 232
+#define HOME_STATUS_CAROUSEL_Y 7
+#define HOME_STATUS_CAROUSEL_W 90
+#define HOME_STATUS_CAROUSEL_H 26
+#define HOME_TOP_CAROUSEL_INTERVAL_MS 5000U
+#define HOME_BOTTOM_STATUS_Y (HOME_GROUND_TILE_Y + 2)
 #define HOME_BOTTOM_STATUS_H 24
 #define HOME_BOTTOM_STATUS_CENTER_Y (HOME_BOTTOM_STATUS_Y + (HOME_BOTTOM_STATUS_H / 2))
 #define HOME_STATUS_ENV_X 150
@@ -230,26 +235,22 @@ static uint8_t ui_HomePage_canvas_intersects(egui_canvas_t *canvas,
 #define HOME_STATUS_PM25_W 132
 #define HOME_STATUS_PM25_H HOME_BOTTOM_STATUS_H
 
-static constexpr bool HOME_SHOW_PM25 = false;
-static constexpr bool HOME_SHOW_ENVIRONMENT = false;
-static constexpr bool HOME_SHOW_BATTERY = false;
-
-#define HOME_BATTERY_REGION_X 304
-#define HOME_BATTERY_REGION_Y 131
-#define HOME_BATTERY_REGION_W 80
-#define HOME_BATTERY_REGION_H 28
-#define HOME_BATTERY_BODY_X 306
-#define HOME_BATTERY_BODY_Y (HOME_BOTTOM_STATUS_CENTER_Y - (HOME_BATTERY_BODY_H / 2) - 5)
-#define HOME_BATTERY_BODY_W 26
-#define HOME_BATTERY_BODY_H 14
-#define HOME_BATTERY_TERMINAL_X 332
-#define HOME_BATTERY_TERMINAL_Y (HOME_BOTTOM_STATUS_CENTER_Y - (HOME_BATTERY_TERMINAL_H / 2) - 5)
+#define HOME_BATTERY_REGION_X 168
+#define HOME_BATTERY_REGION_Y 0
+#define HOME_BATTERY_REGION_W 64
+#define HOME_BATTERY_REGION_H 34
+#define HOME_BATTERY_BODY_X 170
+#define HOME_BATTERY_BODY_Y 10
+#define HOME_BATTERY_BODY_W 20
+#define HOME_BATTERY_BODY_H 12
+#define HOME_BATTERY_TERMINAL_X 190
+#define HOME_BATTERY_TERMINAL_Y 13
 #define HOME_BATTERY_TERMINAL_W 3
-#define HOME_BATTERY_TERMINAL_H 6
-#define HOME_BATTERY_TEXT_X 339
-#define HOME_BATTERY_TEXT_Y (HOME_BOTTOM_STATUS_Y - 5)
-#define HOME_BATTERY_TEXT_W 45
-#define HOME_BATTERY_TEXT_H HOME_BOTTOM_STATUS_H
+#define HOME_BATTERY_TERMINAL_H 5
+#define HOME_BATTERY_TEXT_X 197
+#define HOME_BATTERY_TEXT_Y 7
+#define HOME_BATTERY_TEXT_W 30
+#define HOME_BATTERY_TEXT_H 24
 #define HOME_BATTERY_CHARGE_FILL_MS 1200U
 #define HOME_BATTERY_CHARGE_HOLD_MS 300U
 #define HOME_BATTERY_FULL_FILL_MS 350U
@@ -662,6 +663,12 @@ static void ui_HomePage_sky_update(egui_view_t *view, uint32_t now)
                                    HOME_SKY_CLOUD_BOTTOM_Y);
     }
 
+    if (s_home_render_status.is_day == 0U)
+    {
+        s_home_sky_state.bird_move_tick = now;
+        return;
+    }
+
     bird_steps = (now - s_home_sky_state.bird_move_tick) / HOME_SKY_BIRD_STEP_MS;
     if (bird_steps != 0U)
     {
@@ -764,9 +771,11 @@ static void ui_HomePage_particle_init(ui_home_particle_t *particle,
     }
     else if (ui_HomePage_is_star_scene(scene, is_day) != 0U)
     {
-        particle->y = (int16_t)ui_HomePage_random_range(4U, 106U);
-        particle->size = (uint8_t)ui_HomePage_random_range(1U, 2U);
-        particle->duration_ms = (uint16_t)ui_HomePage_random_range(1200U, 3000U);
+        particle->size = (uint8_t)ui_HomePage_random_range(7U, 9U);
+        particle->x = (int16_t)ui_HomePage_random_range(particle->size,
+                                                       UI_SCREEN_W - particle->size - 1U);
+        particle->y = (int16_t)ui_HomePage_random_range(particle->size, 106U);
+        particle->duration_ms = (uint16_t)ui_HomePage_random_range(1600U, 3200U);
     }
 
     particle->prev_x = particle->x;
@@ -820,6 +829,11 @@ static void ui_HomePage_weather_reset(WeatherScene_t scene, uint8_t is_day, uint
     for (uint8_t i = 0U; i < count; i++)
     {
         ui_HomePage_particle_init(&s_home_particles[i], scene, is_day, 1U);
+        if (ui_HomePage_is_star_scene(scene, is_day) != 0U)
+        {
+            s_home_particles[i].age_ms = (uint16_t)ui_HomePage_random_range(
+                0U, s_home_particles[i].duration_ms - 1U);
+        }
     }
 
     if (ui_HomePage_is_rain_scene(scene) != 0U)
@@ -1127,8 +1141,6 @@ static void ui_HomePage_invalidate_precise_scene(egui_view_t *view, const ui_hom
 static void ui_HomePage_invalidate_status_regions(egui_view_t *view)
 {
     ui_HomePage_invalidate_rect(view, HOME_STATUS_TOP_X, HOME_STATUS_TOP_Y, HOME_STATUS_TOP_W, HOME_STATUS_TOP_H);
-    ui_HomePage_invalidate_rect(view, HOME_STATUS_PM25_X, HOME_STATUS_PM25_Y, HOME_STATUS_PM25_W, HOME_STATUS_PM25_H);
-    ui_HomePage_invalidate_rect(view, HOME_STATUS_ENV_X, HOME_STATUS_ENV_Y, HOME_STATUS_ENV_W, HOME_STATUS_ENV_H);
 }
 
 static void ui_HomePage_invalidate_battery(egui_view_t *view)
@@ -1278,6 +1290,8 @@ void ui_HomePage_screen_init(void)
     s_home_animation_enabled = true;
     s_home_scene_tick = egui_timer_get_current_time();
     s_home_status_tick = s_home_scene_tick;
+    s_home_top_carousel_tick = s_home_scene_tick;
+    s_home_top_carousel_index = 0U;
     s_home_status_version = 0xFFFFFFFFU;
     s_home_scene_state.is_valid = 0U;
     s_home_weather_state.is_valid = 0U;
@@ -1300,6 +1314,8 @@ void ui_HomePage_screen_enter(void)
     ui_HomePage_enter_mono_quantize_mode();
     s_home_scene_tick = egui_timer_get_current_time();
     s_home_status_tick = s_home_scene_tick;
+    s_home_top_carousel_tick = s_home_scene_tick;
+    s_home_top_carousel_index = 0U;
     s_home_scene_state.is_valid = 0U;
     s_home_weather_state.is_valid = 0U;
     DataApp_HomeStatus_Get(&status);
@@ -1325,26 +1341,26 @@ static bool ui_HomePage_key_consume(const KeyEvent &event)
     if (event.gesture == KeyGesture::DoubleClick) {
         if (event.id == KeyId::Middle)
         {
-            return task_post_player_command(PlayerCommandType::Toggle);
+            return task_post_player_command(PlayerCommandType::Toggle, 0, true);
         }
         if (event.id == KeyId::Left)
         {
-            return task_post_player_command(PlayerCommandType::Previous);
+            return task_post_player_command(PlayerCommandType::Previous, 0, true);
         }
         if (event.id == KeyId::Right)
         {
-            return task_post_player_command(PlayerCommandType::Next);
+            return task_post_player_command(PlayerCommandType::Next, 0, true);
         }
     }
 
     if (event.gesture == KeyGesture::LongPress) {
         if (event.id == KeyId::Left)
         {
-            return task_post_player_command(PlayerCommandType::ChangeVolume, -1);
+            return task_post_player_command(PlayerCommandType::ChangeVolume, -1, true);
         }
         if (event.id == KeyId::Right)
         {
-            return task_post_player_command(PlayerCommandType::ChangeVolume, 1);
+            return task_post_player_command(PlayerCommandType::ChangeVolume, 1, true);
         }
     }
 
@@ -1446,6 +1462,12 @@ static void ui_HomePage_timer_cb(egui_timer_t *timer)
     if (status.version != s_home_status_version)
     {
         s_home_status_version = status.version;
+        refresh_status = 1U;
+    }
+    if ((now - s_home_top_carousel_tick) >= HOME_TOP_CAROUSEL_INTERVAL_MS)
+    {
+        s_home_top_carousel_tick = now;
+        s_home_top_carousel_index = (uint8_t)((s_home_top_carousel_index + 1U) % 3U);
         refresh_status = 1U;
     }
     if ((now - s_home_status_tick) >= 1000U)
@@ -1561,10 +1583,13 @@ static void ui_HomePage_draw_scene(egui_canvas_t *canvas)
                                    s_home_sky_state.clouds,
                                    HOME_SKY_CLOUD_COUNT,
                                    home_sky_cloud_get);
-        ui_HomePage_draw_sky_group(canvas,
-                                   s_home_sky_state.birds,
-                                   HOME_SKY_BIRD_COUNT,
-                                   home_sky_bird_get);
+        if (s_home_render_status.is_day != 0U)
+        {
+            ui_HomePage_draw_sky_group(canvas,
+                                       s_home_sky_state.birds,
+                                       HOME_SKY_BIRD_COUNT,
+                                       home_sky_bird_get);
+        }
     }
 
     /* 地面：只画屏幕内可见的瓦片 */
@@ -1663,52 +1688,13 @@ static ui_home_style_t ui_HomePage_get_style(WeatherScene_t scene, uint8_t is_da
     }
     else
     {
-        style.background_rgb = 0x07162F;
-        style.background_top_rgb = 0x041024;
-        style.background_bottom_rgb = 0x0A1C3A;
-        style.top_text_rgb = HOME_TOP_TEXT_LIGHT_RGB;
-        style.ground_text_rgb = HOME_GROUND_TEXT_NIGHT_RGB;
-        style.tint_rgb = 0x020817;
-        style.tint_alpha = 88U;
-
-        switch (scene)
-        {
-        case WEATHER_SCENE_CLOUDY:
-            style.background_rgb = 0x111827;
-            style.background_top_rgb = 0x0A101C;
-            style.background_bottom_rgb = 0x182031;
-            style.tint_alpha = 96U;
-            break;
-        case WEATHER_SCENE_LIGHT_RAIN:
-            style.background_rgb = 0x102638;
-            style.background_top_rgb = 0x091B2A;
-            style.background_bottom_rgb = 0x173144;
-            style.tint_alpha = 104U;
-            break;
-        case WEATHER_SCENE_MODERATE_RAIN:
-            style.background_rgb = 0x0B1D2B;
-            style.background_top_rgb = 0x06141F;
-            style.background_bottom_rgb = 0x102637;
-            style.tint_alpha = 112U;
-            break;
-        case WEATHER_SCENE_HEAVY_RAIN:
-            style.background_rgb = 0x07131F;
-            style.background_top_rgb = 0x030C15;
-            style.background_bottom_rgb = 0x0B1A29;
-            style.tint_alpha = 124U;
-            break;
-        case WEATHER_SCENE_SNOW:
-            style.background_rgb = 0x263848;
-            style.background_top_rgb = 0x192A39;
-            style.background_bottom_rgb = 0x334657;
-            style.tint_rgb = 0x102034;
-            style.tint_alpha = 88U;
-            break;
-        case WEATHER_SCENE_CLEAR:
-        case WEATHER_SCENE_UNKNOWN:
-        default:
-            break;
-        }
+        style.background_rgb = 0xFFFFFF;
+        style.background_top_rgb = 0xFFFFFF;
+        style.background_bottom_rgb = 0xFFFFFF;
+        style.top_text_rgb = HOME_TOP_TEXT_DARK_RGB;
+        style.ground_text_rgb = HOME_TOP_TEXT_DARK_RGB;
+        style.tint_rgb = 0xFFFFFF;
+        style.tint_alpha = 0U;
     }
 
     return style;
@@ -1746,6 +1732,71 @@ static void ui_HomePage_update_render_snapshot(const DataApp_HomeStatus_t *statu
     s_home_render_status = *status;
     s_home_render_scene = ui_HomePage_normalize_scene(status->weather_scene);
     s_home_render_style = ui_HomePage_get_style(s_home_render_scene, status->is_day);
+}
+
+static uint16_t ui_HomePage_star_progress(const ui_home_particle_t *particle)
+{
+    uint16_t half_duration;
+
+    if ((particle == NULL) || (particle->duration_ms < 2U))
+    {
+        return 0U;
+    }
+
+    half_duration = (uint16_t)(particle->duration_ms / 2U);
+    if (particle->age_ms <= half_duration)
+    {
+        return (uint16_t)(((uint32_t)particle->age_ms * 1000U) / half_duration);
+    }
+
+    return (uint16_t)(((uint32_t)(particle->duration_ms - particle->age_ms) * 1000U) /
+                      (particle->duration_ms - half_duration));
+}
+
+static uint8_t ui_HomePage_star_radius(const ui_home_particle_t *particle)
+{
+    uint8_t minimum_radius;
+    uint16_t progress;
+
+    if (particle == NULL)
+    {
+        return 1U;
+    }
+
+    minimum_radius = (uint8_t)((particle->size + 2U) / 3U);
+    progress = ui_HomePage_star_progress(particle);
+    return (uint8_t)(minimum_radius +
+                     (((uint32_t)(particle->size - minimum_radius) * progress + 500U) / 1000U));
+}
+
+static egui_alpha_t ui_HomePage_star_alpha(const ui_home_particle_t *particle)
+{
+    const uint32_t minimum_alpha = ((uint32_t)EGUI_ALPHA_100 * 25U) / 100U;
+    const uint32_t progress = ui_HomePage_star_progress(particle);
+    return (egui_alpha_t)(minimum_alpha +
+                          ((((uint32_t)EGUI_ALPHA_100 - minimum_alpha) * progress + 500U) /
+                           1000U));
+}
+
+static void ui_HomePage_draw_star(egui_canvas_t *canvas,
+                                  const ui_home_particle_t *particle)
+{
+    const int radius = (int)ui_HomePage_star_radius(particle);
+    const int waist = (radius > 3) ? ((radius + 2) / 3) : 1;
+    const egui_dim_t points[] = {
+        particle->x,         (egui_dim_t)(particle->y - radius),
+        (egui_dim_t)(particle->x + waist), (egui_dim_t)(particle->y - waist),
+        (egui_dim_t)(particle->x + radius), particle->y,
+        (egui_dim_t)(particle->x + waist), (egui_dim_t)(particle->y + waist),
+        particle->x,         (egui_dim_t)(particle->y + radius),
+        (egui_dim_t)(particle->x - waist), (egui_dim_t)(particle->y + waist),
+        (egui_dim_t)(particle->x - radius), particle->y,
+        (egui_dim_t)(particle->x - waist), (egui_dim_t)(particle->y - waist),
+    };
+
+    egui_canvas_draw_polygon_fill(canvas, points, 8U,
+                                  ui_color(0xFFF4C2),
+                                  ui_HomePage_star_alpha(particle));
 }
 
 static void ui_HomePage_draw_weather_particles(egui_canvas_t *canvas)
@@ -1806,7 +1857,7 @@ static void ui_HomePage_draw_weather_particles(egui_canvas_t *canvas)
         }
         else if (is_star_scene != 0U)
         {
-            int radius = (int)particle->size + 3;
+            int radius = (int)particle->size + 1;
 
             if (!ui_HomePage_canvas_intersects(canvas,
                                                particle->x - radius,
@@ -1816,17 +1867,7 @@ static void ui_HomePage_draw_weather_particles(egui_canvas_t *canvas)
             {
                 continue;
             }
-            egui_canvas_draw_circle_fill_basic(canvas,
-                                               particle->x,
-                                               particle->y,
-                                               particle->size,
-                                               ui_color(ui_HomePage_foreground_on_sky_rgb()),
-                                               EGUI_ALPHA_100);
-            if (particle->size > 1U)
-            {
-                egui_canvas_draw_hline(canvas, (egui_dim_t)(particle->x - 3), particle->y, 7, ui_color(ui_HomePage_foreground_on_sky_rgb()), EGUI_ALPHA_100);
-                egui_canvas_draw_vline(canvas, particle->x, (egui_dim_t)(particle->y - 3), 7, ui_color(ui_HomePage_foreground_on_sky_rgb()), EGUI_ALPHA_100);
-            }
+            ui_HomePage_draw_star(canvas, particle);
         }
     }
 }
@@ -1965,9 +2006,10 @@ static void ui_HomePage_draw_date_text(egui_canvas_t *canvas,
     memcpy(day_text, month_pos + sizeof(month_marker) - 1U, day_len);
     day_text[day_len] = '\0';
 
-    pen_x += ui_HomePage_draw_text_advance(canvas, number_font, month_text, pen_x, y + 2, rgb);
+    pen_x += ui_HomePage_draw_text_advance(canvas, number_font, month_text, pen_x, y, rgb);
     pen_x += ui_HomePage_draw_text_advance(canvas, heiti_font, month_marker, pen_x, y, rgb);
-    pen_x += ui_HomePage_draw_text_advance(canvas, number_font, day_text, pen_x, y + 2, rgb);
+    pen_x += 2;
+    pen_x += ui_HomePage_draw_text_advance(canvas, number_font, day_text, pen_x, y, rgb);
     (void)ui_HomePage_draw_text_advance(canvas, heiti_font, day_marker, pen_x, y, rgb);
 }
 
@@ -1998,7 +2040,7 @@ static uint8_t ui_HomePage_canvas_intersects(egui_canvas_t *canvas,
 
 static void ui_HomePage_draw_battery(egui_canvas_t *canvas,
                                      const DataApp_HomeStatus_t *status,
-                                     uint32_t ground_text_rgb)
+                                     uint32_t top_text_rgb)
 {
     const egui_font_t *font = EGUI_FONT_OF(&egui_res_font_montserrat_12_4);
     uint32_t color_rgb;
@@ -2024,7 +2066,7 @@ static void ui_HomePage_draw_battery(egui_canvas_t *canvas,
 
     color_rgb = (status->charging || status->charge_full) ?
                     HOME_BATTERY_ACTIVE_RGB :
-                    ground_text_rgb;
+                    top_text_rgb;
     display_percent = s_home_battery_state.display_percent;
     if (display_percent > 100U)
     {
@@ -2094,11 +2136,12 @@ static void ui_HomePage_draw_top_status(egui_canvas_t *canvas,
                                         uint32_t top_text_rgb)
 {
     const egui_font_t *small_font = EGUI_FONT_OF(&egui_res_font_montserrat_16_4);
+    const egui_font_t *carousel_font = EGUI_FONT_OF(&egui_res_font_montserrat_12_4);
     const egui_font_t *heiti_font_16;
-    const egui_font_t *heiti_font_18;
 #if EGUI_CONFIG_FUNCTION_IMAGE_FORMAT_RGB565
     const egui_image_std_t *weather_icon;
 #endif
+    const char *carousel_text;
 
     if ((status == NULL) ||
         !ui_HomePage_canvas_intersects(canvas, HOME_STATUS_TOP_X, HOME_STATUS_TOP_Y, HOME_STATUS_TOP_W, HOME_STATUS_TOP_H))
@@ -2110,17 +2153,33 @@ static void ui_HomePage_draw_top_status(egui_canvas_t *canvas,
     {
         s_home_heiti_16 = ui_heiti_font_get_16();
     }
-    if (s_home_heiti_18 == NULL)
-    {
-        s_home_heiti_18 = ui_heiti_font_get_18();
-    }
     heiti_font_16 = (s_home_heiti_16 != NULL) ? s_home_heiti_16 : small_font;
-    heiti_font_18 = (s_home_heiti_18 != NULL) ? s_home_heiti_18 : EGUI_FONT_OF(&egui_res_font_montserrat_18_4);
 
     ui_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_30_4), status->time_text, 8, 1, 88, 32, EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER, top_text_rgb);
-    ui_HomePage_draw_date_text(canvas, small_font, heiti_font_18, status->date_text, 104, 10, top_text_rgb);
-    ui_HomePage_draw_raw_text(canvas, heiti_font_18, status->week_text, 218, 10, top_text_rgb);
-    ui_HomePage_draw_raw_text(canvas, heiti_font_18, status->temp_range_text, 258, 10, top_text_rgb);
+    ui_HomePage_draw_date_text(canvas, small_font, heiti_font_16, status->date_text, 104, 7, top_text_rgb);
+
+    switch (s_home_top_carousel_index)
+    {
+    case 1U:
+        carousel_text = status->env_text;
+        break;
+    case 2U:
+        carousel_text = status->temp_range_text;
+        break;
+    case 0U:
+    default:
+        carousel_text = status->pm25_text;
+        break;
+    }
+    ui_draw_text(canvas,
+                 carousel_font,
+                 carousel_text,
+                 HOME_STATUS_CAROUSEL_X,
+                 HOME_STATUS_CAROUSEL_Y,
+                 HOME_STATUS_CAROUSEL_W,
+                 HOME_STATUS_CAROUSEL_H,
+                 EGUI_ALIGN_CENTER | EGUI_ALIGN_VCENTER,
+                 top_text_rgb);
 
 #if EGUI_CONFIG_FUNCTION_IMAGE_FORMAT_RGB565
     weather_icon = ui_weather_icon_get_mask(status->weather_icon_id);
@@ -2408,8 +2467,7 @@ static void ui_HomePage_draw_env_status(egui_canvas_t *canvas,
 
 static void ui_HomePage_draw_status(egui_canvas_t *canvas,
                                     const DataApp_HomeStatus_t *status,
-                                    uint32_t top_text_rgb,
-                                    uint32_t ground_text_rgb)
+                                    uint32_t top_text_rgb)
 {
     if (status == NULL)
     {
@@ -2417,18 +2475,7 @@ static void ui_HomePage_draw_status(egui_canvas_t *canvas,
     }
 
     ui_HomePage_draw_top_status(canvas, status, top_text_rgb);
-    if (HOME_SHOW_PM25)
-    {
-        ui_HomePage_draw_pm25_status(canvas, status, ground_text_rgb);
-    }
-    if (HOME_SHOW_ENVIRONMENT)
-    {
-        ui_HomePage_draw_env_status(canvas, status, ground_text_rgb);
-    }
-    if (HOME_SHOW_BATTERY)
-    {
-        ui_HomePage_draw_battery(canvas, status, ground_text_rgb);
-    }
+    ui_HomePage_draw_battery(canvas, status, top_text_rgb);
 }
 
 static uint32_t ui_HomePage_mono_rgb(uint32_t rgb)
@@ -2475,20 +2522,17 @@ static void ui_HomePage_on_draw(egui_view_t *self)
 {
     egui_canvas_t *canvas = egui_view_get_canvas(self);
     uint32_t top_text_rgb;
-    uint32_t ground_text_rgb;
 
     ui_HomePage_draw_sky_gradient(canvas,
                                   s_home_render_style.background_top_rgb,
                                   s_home_render_style.background_bottom_rgb);
     top_text_rgb = ui_HomePage_foreground_on_sky_rgb();
-    ground_text_rgb = ui_HomePage_foreground_on_ground_rgb();
     ui_HomePage_draw_scene(canvas);
     ui_HomePage_draw_weather_particles(canvas);
     ui_HomePage_draw_lightning(canvas, s_home_scene_tick);
     ui_HomePage_draw_status(canvas,
                             &s_home_render_status,
-                            top_text_rgb,
-                            ground_text_rgb);
+                            top_text_rgb);
 }
 
 namespace {

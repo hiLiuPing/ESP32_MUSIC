@@ -183,10 +183,23 @@ void copy_variant(char (&destination)[N], JsonVariantConst value) {
 }
 }
 
-bool weather_service_sync_time() {
+bool weather_service_sync_time(AppTime *time) {
+    if (time == nullptr) return false;
     configTime(8 * 3600, 0, NTP_1, NTP_2, NTP_3);
     struct tm local = {};
-    return getLocalTime(&local, HTTP_TIMEOUT_MS);
+    if (!getLocalTime(&local, HTTP_TIMEOUT_MS) || local.tm_year + 1900 < 2020) {
+        return false;
+    }
+    *time = {};
+    time->year = static_cast<uint16_t>(local.tm_year + 1900);
+    time->month = static_cast<uint8_t>(local.tm_mon + 1);
+    time->day = static_cast<uint8_t>(local.tm_mday);
+    time->hour = static_cast<uint8_t>(local.tm_hour);
+    time->minute = static_cast<uint8_t>(local.tm_min);
+    time->second = static_cast<uint8_t>(local.tm_sec);
+    time->valid = true;
+    time->stale = false;
+    return true;
 }
 
 bool weather_service_resolve_location(WeatherNetworkProfile *profile) {
@@ -252,6 +265,8 @@ bool weather_service_query_now(HomeWeatherData *weather) {
     weather->scene = scene_for_icon(icon);
     weather->temperature_c = now["temp"].as<int16_t>();
     weather->humidity = now["humidity"].as<uint8_t>();
+    weather->valid = true;
+    weather->stale = false;
     copy_variant(weather->text, now["text"]);
     copy_variant(weather->feels_like, now["feelsLike"]);
     copy_variant(weather->visibility, now["vis"]);

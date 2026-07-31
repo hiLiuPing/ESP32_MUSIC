@@ -10,8 +10,8 @@
 namespace {
 constexpr uint32_t SCAN_PERIOD_MS = 10;
 constexpr int DEBOUNCE_MS = 30;
-constexpr uint32_t CLICK_MS = 300;
-constexpr uint32_t PRESS_MS = 800;
+constexpr uint32_t CLICK_MS = 150;
+constexpr uint32_t PRESS_MS = 500;
 
 struct ButtonBinding {
     OneButton button;

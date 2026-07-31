@@ -344,7 +344,7 @@ void gui_page_handle_key(const KeyEvent &event) {
         return;
     }
 
-    if (ui_poetry_popup_is_visible() || ui_system_popup_is_visible()) {
+    if (ui_poetry_popup_is_visible() || ui_system_popup_is_blocking()) {
         ui_poetry_popup_dismiss();
         ui_system_popup_dismiss_immediate();
         dirty = true;

@@ -11,3 +11,4 @@ void ui_system_popup_show(const SystemNotifyMessage &message);
 void ui_system_popup_dismiss();
 void ui_system_popup_dismiss_immediate();
 bool ui_system_popup_is_visible();
+bool ui_system_popup_is_blocking();

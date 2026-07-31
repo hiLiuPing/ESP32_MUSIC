@@ -1,6 +1,7 @@
 #include <Arduino.h>
 
 #include "app/audio_settings.h"
+#include "app/sensor_service.h"
 #include "bsp/bsp_audio.h"
 #include "bsp/bsp_display.h"
 #include "bsp/bsp_storage.h"
@@ -88,6 +89,12 @@ void hardware_init_task(void *parameter) {
         Serial.println("[HW] WM8978 unavailable");
         system_notify_post(SystemNotifyType::Audio, "AUDIO CODEC UNAVAILABLE");
     }
+
+    Serial.println("[HW] I2C sensors init");
+    const uint32_t sensor_mask = sensor_service_init();
+    Serial.printf("[HW] sensor init mask=0x%02lX expected=0x%02lX\n",
+                  static_cast<unsigned long>(sensor_mask),
+                  static_cast<unsigned long>(SENSOR_INIT_ALL));
 
     xEventGroupSetBits(HardwareEventGroup, HW_EVENT_INIT_DONE);
     if (GuiWakeSemaphore != nullptr) {

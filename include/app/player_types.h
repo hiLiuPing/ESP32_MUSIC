@@ -71,6 +71,7 @@ struct PlayerCommand {
     AudioSettings audio_settings;
     bool persist_audio_settings;
     bool restart_sleep_timer;
+    bool show_feedback;
 };
 
 struct PlayerStatus {

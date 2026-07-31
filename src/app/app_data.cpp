@@ -6,8 +6,12 @@
 #include <cstdlib>
 
 namespace {
+constexpr uint8_t DAY_START_HOUR = 7U;
+constexpr uint8_t NIGHT_START_HOUR = 19U;
+
 SemaphoreHandle_t snapshot_mutex = nullptr;
 AppDataSnapshot current_snapshot = {};
+uint32_t logged_weather_version = UINT32_MAX;
 AppTime injected_time = {};
 HomeWeatherData injected_weather = {};
 WeatherForecastDay injected_forecast[APP_WEATHER_FORECAST_DAYS] = {};
@@ -122,15 +126,16 @@ void format_snapshot(AppDataSnapshot *snapshot) {
     }
     if (snapshot->environment.valid) {
         std::snprintf(snapshot->env_text, sizeof(snapshot->env_text),
-                      "%sT %d.%dC H %u%%", snapshot->environment.stale ? "*" : "",
+                      "%sT%d.%dC H%u%%", snapshot->environment.stale ? "*" : "",
                       snapshot->environment.temperature_x10 / 10,
                       std::abs(snapshot->environment.temperature_x10 % 10),
                       snapshot->environment.humidity);
     } else {
-        std::snprintf(snapshot->env_text, sizeof(snapshot->env_text), "T --.-C H --%%");
+        std::snprintf(snapshot->env_text, sizeof(snapshot->env_text), "T--.-C H--%%");
     }
     snapshot->is_day = !snapshot->time.valid ||
-                       (snapshot->time.hour >= 6 && snapshot->time.hour < 19);
+                       (snapshot->time.hour >= DAY_START_HOUR &&
+                        snapshot->time.hour < NIGHT_START_HOUR);
 }
 
 void rebuild_locked() {
@@ -168,6 +173,19 @@ void rebuild_locked() {
     current_snapshot.weather_stale = current_snapshot.weather.stale;
     current_snapshot.version = ++version;
     format_snapshot(&current_snapshot);
+    if (current_snapshot.weather.version != logged_weather_version) {
+        logged_weather_version = current_snapshot.weather.version;
+        Serial.printf("[WEATHER_DATA] valid=%u stale=%u icon=%u scene=%u temp=%d humidity=%u high=%d low=%d text=%s\\n",
+                      current_snapshot.weather.valid ? 1U : 0U,
+                      current_snapshot.weather.stale ? 1U : 0U,
+                      static_cast<unsigned>(current_snapshot.weather.icon_id),
+                      static_cast<unsigned>(current_snapshot.weather.scene),
+                      static_cast<int>(current_snapshot.weather.temperature_c),
+                      static_cast<unsigned>(current_snapshot.weather.humidity),
+                      static_cast<int>(current_snapshot.weather.high_c),
+                      static_cast<int>(current_snapshot.weather.low_c),
+                      current_snapshot.weather.text);
+    }
 }
 }
 
@@ -299,6 +317,31 @@ bool app_data_get_weather_forecast(WeatherForecastDay *days, uint8_t count,
     return true;
 }
 
+void app_data_set_home_demo(const AppTime &time, const HomeWeatherData &weather,
+                            const WeatherForecastDay *forecast, uint8_t count) {
+    if (forecast == nullptr || count == 0U) return;
+    if (count > APP_WEATHER_FORECAST_DAYS) count = APP_WEATHER_FORECAST_DAYS;
+    if (!lock_snapshot(portMAX_DELAY)) return;
+
+    injected_time = time;
+    injected_time.version++;
+    time_stale_override = false;
+    external_time_source = true;
+    injected_weather = weather;
+    injected_weather.version++;
+    const uint32_t next_forecast_version = injected_forecast_version + 1U;
+    for (uint8_t i = 0U; i < count; ++i) {
+        injected_forecast[i] = forecast[i];
+        injected_forecast[i].version = next_forecast_version;
+    }
+    for (uint8_t i = count; i < APP_WEATHER_FORECAST_DAYS; ++i) {
+        injected_forecast[i] = {};
+    }
+    injected_forecast_version = next_forecast_version;
+    rebuild_locked();
+    unlock_snapshot();
+}
+
 void app_data_set_environment(const HomeEnvironmentData &environment) {
     if (lock_snapshot(portMAX_DELAY)) {
         injected_environment = environment;
@@ -363,6 +406,7 @@ void app_data_update_temporary_home_data(uint32_t uptime_ms,
 
     injected_battery.version++;
     injected_battery.percent = 76;
+    injected_battery.voltage_mv = 3890U;
     injected_battery.charging = false;
     injected_battery.full = false;
     injected_battery.valid = true;
@@ -432,5 +476,7 @@ uint8_t Time_GetColon() {
 uint8_t Time_IsDaytime() {
     AppTime time = {};
     Time_Get(&time);
-    return static_cast<uint8_t>(!time.valid || (time.hour >= 6 && time.hour < 19));
+    return static_cast<uint8_t>(!time.valid ||
+                                (time.hour >= DAY_START_HOUR &&
+                                 time.hour < NIGHT_START_HOUR));
 }

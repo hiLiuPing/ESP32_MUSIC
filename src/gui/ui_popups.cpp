@@ -18,6 +18,9 @@ constexpr int16_t SYSTEM_PANEL_H = 72;
 constexpr int16_t SYSTEM_PANEL_HIDDEN_Y = -SYSTEM_PANEL_H;
 constexpr uint32_t SYSTEM_ANIMATION_MS = 250U;
 constexpr uint32_t SYSTEM_HOLD_MS = 4500U;
+constexpr uint32_t MUSIC_HOLD_MS = 1500U;
+constexpr const char *MUSIC_GLYPHS =
+    "音乐控制播放暂停上一曲下一曲音量加减没有可歌曲失败操作";
 
 egui_background_color_param_t poetry_panel_background_param;
 egui_background_params_t poetry_panel_background_params;
@@ -91,11 +94,11 @@ void initialize_backgrounds() {
     system_panel_background_param.type =
         EGUI_BACKGROUND_COLOR_TYPE_ROUND_RECTANGLE;
     system_panel_background_param.alpha = EGUI_ALPHA_100;
-    system_panel_background_param.color = EGUI_COLOR_BLACK;
-    system_panel_background_param.stroke_width = 1;
+    system_panel_background_param.color = EGUI_COLOR_WHITE;
+    system_panel_background_param.stroke_width = 2;
     system_panel_background_param.stroke_alpha = EGUI_ALPHA_100;
-    system_panel_background_param.stroke_color = EGUI_COLOR_WHITE;
-    system_panel_background_param.shape.round_rectangle.radius = 8;
+    system_panel_background_param.stroke_color = EGUI_COLOR_BLACK;
+    system_panel_background_param.shape.round_rectangle.radius = 12;
     system_panel_background_params = {};
     system_panel_background_params.normal_param =
         &system_panel_background_param;
@@ -155,6 +158,12 @@ void set_system_panel_y(int16_t next_y) {
 void ui_popups_init() {
     if (initialized) return;
     egui_core_t *core = egui_port_core();
+    const bool poetry_cache_ready = ui_poetry_cache_init();
+    const bool music_glyphs_ready =
+        poetry_cache_ready && ui_heiti_font_cache_text(16U, MUSIC_GLYPHS);
+    const egui_font_t *system_font = music_glyphs_ready
+                                         ? ui_heiti_font_get_cached(16U)
+                                         : ui_heiti_font_get(16U);
     egui_view_group_init(EGUI_VIEW_OF(&root), core);
     egui_view_set_size(EGUI_VIEW_OF(&root), EGUI_CONFIG_SCREEN_WIDTH,
                        EGUI_CONFIG_SCREEN_HEIGHT);
@@ -182,10 +191,10 @@ void ui_popups_init() {
                SYSTEM_PANEL_HIDDEN_Y, SYSTEM_PANEL_W, SYSTEM_PANEL_H);
     egui_view_set_background(EGUI_VIEW_OF(&system_panel),
                              EGUI_BG_OF(&system_panel_background));
-    initialize_label(system_kind, EGUI_FONT_OF(&egui_res_font_montserrat_16_4),
-                     EGUI_COLOR_WHITE, EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER);
-    initialize_label(system_text, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
-                     EGUI_COLOR_WHITE, EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER);
+    initialize_label(system_kind, system_font, EGUI_COLOR_BLACK,
+                     EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER);
+    initialize_label(system_text, system_font, EGUI_COLOR_BLACK,
+                     EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER);
     set_region(EGUI_VIEW_OF(&system_kind), 16, 7, 268, 24);
     set_region(EGUI_VIEW_OF(&system_text), 16, 34, 268, 26);
     egui_view_group_add_child(EGUI_VIEW_OF(&system_panel), EGUI_VIEW_OF(&system_kind));
@@ -197,7 +206,6 @@ void ui_popups_init() {
     egui_view_set_visible(EGUI_VIEW_OF(&root), 1);
     initialized = true;
     next_poetry = millis() + 1200000UL;
-    (void)ui_poetry_cache_init();
 }
 
 void ui_popups_service(UiPage current_page) {
@@ -219,7 +227,8 @@ void ui_popups_service(UiPage current_page) {
         return;
     }
 
-    if (system_phase == SystemPopupPhase::Idle) {
+    if (system_phase == SystemPopupPhase::Idle ||
+        system_message.type == SystemNotifyType::Music) {
         SystemNotifyMessage message = {};
         if (system_notify_try_receive(&message)) ui_system_popup_show(message);
     }
@@ -237,7 +246,10 @@ void ui_popups_service(UiPage current_page) {
                     SYSTEM_ANIMATION_MS));
         }
     } else if (system_phase == SystemPopupPhase::Holding) {
-        if (now - system_started >= SYSTEM_HOLD_MS) ui_system_popup_dismiss();
+        const uint32_t hold_ms = system_message.type == SystemNotifyType::Music
+                                     ? MUSIC_HOLD_MS
+                                     : SYSTEM_HOLD_MS;
+        if (now - system_started >= hold_ms) ui_system_popup_dismiss();
     } else if (system_phase == SystemPopupPhase::Exiting) {
         const uint32_t elapsed = now - system_started;
         if (elapsed >= SYSTEM_ANIMATION_MS) {
@@ -290,19 +302,28 @@ bool ui_poetry_popup_is_visible() { return poetry_visible; }
 
 void ui_system_popup_show(const SystemNotifyMessage &message) {
     ui_poetry_popup_dismiss();
+    const bool replacing_music =
+        system_phase != SystemPopupPhase::Idle &&
+        system_message.type == SystemNotifyType::Music;
     system_message = message;
     const bool error_kind = message.type == SystemNotifyType::Error ||
                             message.type == SystemNotifyType::Storage ||
                             message.type == SystemNotifyType::Audio ||
                             message.type == SystemNotifyType::Player;
-    const char *kind = error_kind ? "ERROR" :
+    const char *kind = message.type == SystemNotifyType::Music ? "音乐控制" :
+                       error_kind ? "ERROR" :
                        message.type == SystemNotifyType::Warning ? "WARNING" : "NOTICE";
     egui_view_label_set_text(EGUI_VIEW_OF(&system_kind), kind);
     egui_view_label_set_text(EGUI_VIEW_OF(&system_text), system_message.text);
     egui_view_set_visible(EGUI_VIEW_OF(&system_panel), 1);
-    system_phase = SystemPopupPhase::Entering;
     system_started = millis();
-    set_system_panel_y(SYSTEM_PANEL_HIDDEN_Y);
+    if (replacing_music) {
+        system_phase = SystemPopupPhase::Holding;
+        set_system_panel_y(SYSTEM_PANEL_Y);
+    } else {
+        system_phase = SystemPopupPhase::Entering;
+        set_system_panel_y(SYSTEM_PANEL_HIDDEN_Y);
+    }
     egui_view_remove_from_user_root(EGUI_VIEW_OF(&root));
     egui_core_add_user_root_view(EGUI_VIEW_OF(&root));
 }
@@ -323,4 +344,9 @@ void ui_system_popup_dismiss_immediate() {
 
 bool ui_system_popup_is_visible() {
     return system_phase != SystemPopupPhase::Idle;
+}
+
+bool ui_system_popup_is_blocking() {
+    return ui_system_popup_is_visible() &&
+           system_message.type != SystemNotifyType::Music;
 }

@@ -4,10 +4,10 @@
 #include <WM8978.h>
 
 #include "bsp/board_config.h"
+#include "bsp/bsp_i2c.h"
 
 namespace {
 WM8978 codec;
-constexpr uint32_t I2C_FREQUENCY = 100000U;
 constexpr uint32_t AUDIO_POWER_OFF_MS = 100U;
 constexpr uint32_t AUDIO_POWER_SETTLE_MS = 100U;
 constexpr uint32_t AMPLIFIER_SETTLE_MS = 5U;
@@ -20,38 +20,6 @@ uint8_t eq_gain_from_db(int8_t db) {
     return static_cast<uint8_t>(constrain(static_cast<int>(db) + 12, 0, 24));
 }
 
-bool start_i2c_bus() {
-    const bool ready = Wire.begin(BoardConfig::I2cSda, BoardConfig::I2cScl, I2C_FREQUENCY);
-    Serial.printf("[I2C] begin SDA=%u SCL=%u frequency=%lu result=%s\n",
-                  BoardConfig::I2cSda, BoardConfig::I2cScl,
-                  static_cast<unsigned long>(I2C_FREQUENCY),
-                  ready ? "ready" : "failed");
-    return ready;
-}
-
-uint8_t probe_i2c_address(uint8_t address) {
-    Wire.beginTransmission(address);
-    return Wire.endTransmission();
-}
-
-void scan_i2c_bus() {
-    uint8_t devices = 0U;
-    Serial.println("[I2C] scan start range=0x08-0x77");
-    for (uint8_t address = 0x08U; address <= 0x77U; ++address) {
-        const uint8_t result = probe_i2c_address(address);
-        if (result == 0U) {
-            ++devices;
-            Serial.printf("[I2C] found address=0x%02X\n", address);
-        } else if ((result != 2U) && (result != 3U)) {
-            Serial.printf("[I2C] scan error address=0x%02X result=%u\n", address, result);
-        }
-    }
-    if (devices == 0U) {
-        Serial.println("[I2C] no devices found");
-    }
-    Serial.printf("[I2C] scan complete devices=%u\n", devices);
-}
-
 void power_cycle_codec() {
     digitalWrite(BoardConfig::AmplifierEnable, LOW);
     digitalWrite(BoardConfig::AudioPower, LOW);
@@ -62,11 +30,10 @@ void power_cycle_codec() {
                   static_cast<unsigned long>(AUDIO_POWER_SETTLE_MS));
     delay(AUDIO_POWER_SETTLE_MS);
 }
-}
 
-void bsp_audio_apply_codec_settings(int8_t bass_db, int8_t treble_db,
-                                    uint8_t surround_depth) {
-    codec.set3Ddir(1U);  // Apply playback effects to the DAC path.
+void apply_codec_settings_unlocked(int8_t bass_db, int8_t treble_db,
+                                   uint8_t surround_depth) {
+    codec.set3Ddir(1U);
     codec.setEQ1(0U, eq_gain_from_db(bass_db));
     codec.setEQ2(0U, 12U);
     codec.setEQ3(0U, 12U);
@@ -75,16 +42,30 @@ void bsp_audio_apply_codec_settings(int8_t bass_db, int8_t treble_db,
     codec.set3D(static_cast<uint8_t>(constrain(static_cast<int>(surround_depth), 0, 15)));
 }
 
+void apply_output_route_unlocked(bool amplifier_enabled) {
+    const uint8_t headphone_volume = amplifier_enabled
+                                         ? HEADPHONE_MUTED_VOLUME
+                                         : HEADPHONE_ACTIVE_VOLUME;
+    codec.setHPvol(headphone_volume, headphone_volume);
+}
+}
+
+void bsp_audio_apply_codec_settings(int8_t bass_db, int8_t treble_db,
+                                    uint8_t surround_depth) {
+    if (!bsp_i2c_lock(pdMS_TO_TICKS(100U))) return;
+    apply_codec_settings_unlocked(bass_db, treble_db, surround_depth);
+    bsp_i2c_unlock();
+}
+
 void bsp_audio_set_amplifier_enabled(bool enabled) {
     pinMode(BoardConfig::AmplifierEnable, OUTPUT);
     digitalWrite(BoardConfig::AmplifierEnable, enabled ? HIGH : LOW);
 }
 
 void bsp_audio_apply_output_route(bool amplifier_enabled) {
-    const uint8_t headphone_volume = amplifier_enabled
-                                         ? HEADPHONE_MUTED_VOLUME
-                                         : HEADPHONE_ACTIVE_VOLUME;
-    codec.setHPvol(headphone_volume, headphone_volume);
+    if (!bsp_i2c_lock(pdMS_TO_TICKS(100U))) return;
+    apply_output_route_unlocked(amplifier_enabled);
+    bsp_i2c_unlock();
 }
 
 void bsp_audio_power_on_early() {
@@ -107,23 +88,27 @@ bool bsp_audio_codec_init() {
     uint8_t last_probe_result = 0xFFU;
     for (uint8_t attempt = 1U; attempt <= CODEC_INIT_ATTEMPTS; ++attempt) {
         if (attempt > 1U) {
-            Wire.end();
+            bsp_i2c_end();
             power_cycle_codec();
         }
-        wire_ready = start_i2c_bus();
+        wire_ready = bsp_i2c_begin();
         last_probe_result = 0xFFU;
         if ((attempt == 1U) && wire_ready) {
-            scan_i2c_bus();
+            bsp_i2c_scan();
         }
 
         Serial.printf("[AUDIO] WM8978 init attempt=%u/%u\n", attempt, CODEC_INIT_ATTEMPTS);
         if (wire_ready) {
-            last_probe_result = probe_i2c_address(WM8978_ADDR);
-            if ((last_probe_result == 0U) && codec.begin()) {
-                codec.setSPKvol(SPEAKER_VOLUME);
-                bsp_audio_apply_output_route(true);
-                bsp_audio_apply_codec_settings(0, 0, 0);
-                return true;
+            last_probe_result = bsp_i2c_probe(WM8978_ADDR);
+            if (last_probe_result == 0U && bsp_i2c_lock(pdMS_TO_TICKS(500U))) {
+                const bool initialized = codec.begin();
+                if (initialized) {
+                    codec.setSPKvol(SPEAKER_VOLUME);
+                    apply_output_route_unlocked(true);
+                    apply_codec_settings_unlocked(0, 0, 0);
+                }
+                bsp_i2c_unlock();
+                if (initialized) return true;
             }
         }
         Serial.printf("[AUDIO] WM8978 attempt failed addr=0x%02X result=%u\n",

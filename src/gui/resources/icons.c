@@ -1,6 +1,7 @@
 #include "gui/resources/icons.h"
 
 #include <stddef.h>
+#include <stdio.h>
 
 #if EGUI_CONFIG_FUNCTION_IMAGE_FORMAT_RGB565
 
@@ -38436,87 +38437,110 @@ static const egui_image_std_info_t weather_icon_999_mask_info = {
 extern const egui_image_std_t weather_icon_999_mask;
 EGUI_IMAGE_SUB_DEFINE_CONST(egui_image_std_t, weather_icon_999_mask, &weather_icon_999_mask_info);
 
-typedef struct { uint16_t icon_id; const egui_image_std_t *image; const egui_image_std_t *mask; } weather_icon_map_t;
+typedef struct { uint16_t icon_id; uint16_t source_id; const egui_image_std_t *image; const egui_image_std_t *mask; } weather_icon_map_t;
 static const weather_icon_map_t s_weather_icons[] = {
-    {100U, &weather_icon_100, &weather_icon_100_mask},
-    {101U, &weather_icon_101, &weather_icon_101_mask},
-    {102U, &weather_icon_102, &weather_icon_102_mask},
-    {103U, &weather_icon_103, &weather_icon_103_mask},
-    {104U, &weather_icon_104, &weather_icon_104_mask},
-    {150U, &weather_icon_150, &weather_icon_150_mask},
-    {153U, &weather_icon_153, &weather_icon_153_mask},
-    {154U, &weather_icon_154, &weather_icon_154_mask},
-    {300U, &weather_icon_300, &weather_icon_300_mask},
-    {301U, &weather_icon_301, &weather_icon_301_mask},
-    {302U, &weather_icon_302, &weather_icon_302_mask},
-    {303U, &weather_icon_303, &weather_icon_303_mask},
-    {304U, &weather_icon_304, &weather_icon_304_mask},
-    {305U, &weather_icon_305, &weather_icon_305_mask},
-    {306U, &weather_icon_306, &weather_icon_306_mask},
-    {307U, &weather_icon_307, &weather_icon_307_mask},
-    {308U, &weather_icon_308, &weather_icon_308_mask},
-    {309U, &weather_icon_309, &weather_icon_309_mask},
-    {310U, &weather_icon_310, &weather_icon_310_mask},
-    {311U, &weather_icon_311, &weather_icon_311_mask},
-    {312U, &weather_icon_312, &weather_icon_312_mask},
-    {313U, &weather_icon_313, &weather_icon_313_mask},
-    {314U, &weather_icon_314, &weather_icon_314_mask},
-    {315U, &weather_icon_315, &weather_icon_315_mask},
-    {316U, &weather_icon_316, &weather_icon_316_mask},
-    {317U, &weather_icon_317, &weather_icon_317_mask},
-    {318U, &weather_icon_318, &weather_icon_318_mask},
-    {350U, &weather_icon_350, &weather_icon_350_mask},
-    {351U, &weather_icon_351, &weather_icon_351_mask},
-    {399U, &weather_icon_399, &weather_icon_399_mask},
-    {400U, &weather_icon_400, &weather_icon_400_mask},
-    {401U, &weather_icon_401, &weather_icon_401_mask},
-    {402U, &weather_icon_402, &weather_icon_402_mask},
-    {403U, &weather_icon_403, &weather_icon_403_mask},
-    {404U, &weather_icon_404, &weather_icon_404_mask},
-    {405U, &weather_icon_405, &weather_icon_405_mask},
-    {406U, &weather_icon_406, &weather_icon_406_mask},
-    {407U, &weather_icon_407, &weather_icon_407_mask},
-    {408U, &weather_icon_408, &weather_icon_408_mask},
-    {409U, &weather_icon_409, &weather_icon_409_mask},
-    {410U, &weather_icon_410, &weather_icon_410_mask},
-    {456U, &weather_icon_456, &weather_icon_456_mask},
-    {457U, &weather_icon_457, &weather_icon_457_mask},
-    {499U, &weather_icon_499, &weather_icon_499_mask},
-    {500U, &weather_icon_500, &weather_icon_500_mask},
-    {501U, &weather_icon_501, &weather_icon_501_mask},
-    {502U, &weather_icon_502, &weather_icon_502_mask},
-    {503U, &weather_icon_503, &weather_icon_503_mask},
-    {504U, &weather_icon_504, &weather_icon_504_mask},
-    {507U, &weather_icon_507, &weather_icon_507_mask},
-    {508U, &weather_icon_508, &weather_icon_508_mask},
-    {509U, &weather_icon_509, &weather_icon_509_mask},
-    {510U, &weather_icon_510, &weather_icon_510_mask},
-    {511U, &weather_icon_511, &weather_icon_511_mask},
-    {512U, &weather_icon_512, &weather_icon_512_mask},
-    {513U, &weather_icon_513, &weather_icon_513_mask},
-    {514U, &weather_icon_514, &weather_icon_514_mask},
-    {515U, &weather_icon_515, &weather_icon_515_mask},
-    {900U, &weather_icon_900, &weather_icon_900_mask},
-    {901U, &weather_icon_901, &weather_icon_901_mask},
-    {999U, &weather_icon_999, &weather_icon_999_mask},
+    {100U, 100U, &weather_icon_100, &weather_icon_100_mask},
+    {101U, 101U, &weather_icon_101, &weather_icon_101_mask},
+    {102U, 102U, &weather_icon_102, &weather_icon_102_mask},
+    {103U, 103U, &weather_icon_103, &weather_icon_103_mask},
+    {104U, 104U, &weather_icon_104, &weather_icon_104_mask},
+    {150U, 150U, &weather_icon_150, &weather_icon_150_mask},
+    {153U, 153U, &weather_icon_153, &weather_icon_153_mask},
+    {154U, 154U, &weather_icon_154, &weather_icon_154_mask},
+    {300U, 300U, &weather_icon_300, &weather_icon_300_mask},
+    {301U, 301U, &weather_icon_301, &weather_icon_301_mask},
+    {302U, 302U, &weather_icon_302, &weather_icon_302_mask},
+    {303U, 303U, &weather_icon_303, &weather_icon_303_mask},
+    {304U, 304U, &weather_icon_304, &weather_icon_304_mask},
+    {305U, 305U, &weather_icon_305, &weather_icon_305_mask},
+    {306U, 306U, &weather_icon_306, &weather_icon_306_mask},
+    {307U, 307U, &weather_icon_307, &weather_icon_307_mask},
+    {308U, 308U, &weather_icon_308, &weather_icon_308_mask},
+    {309U, 309U, &weather_icon_309, &weather_icon_309_mask},
+    {310U, 310U, &weather_icon_310, &weather_icon_310_mask},
+    {311U, 311U, &weather_icon_311, &weather_icon_311_mask},
+    {312U, 312U, &weather_icon_312, &weather_icon_312_mask},
+    {313U, 313U, &weather_icon_313, &weather_icon_313_mask},
+    {314U, 314U, &weather_icon_314, &weather_icon_314_mask},
+    {315U, 315U, &weather_icon_315, &weather_icon_315_mask},
+    {316U, 316U, &weather_icon_316, &weather_icon_316_mask},
+    {317U, 317U, &weather_icon_317, &weather_icon_317_mask},
+    {318U, 318U, &weather_icon_318, &weather_icon_318_mask},
+    {350U, 350U, &weather_icon_350, &weather_icon_350_mask},
+    {351U, 351U, &weather_icon_351, &weather_icon_351_mask},
+    {399U, 399U, &weather_icon_399, &weather_icon_399_mask},
+    {400U, 400U, &weather_icon_400, &weather_icon_400_mask},
+    {401U, 401U, &weather_icon_401, &weather_icon_401_mask},
+    {402U, 402U, &weather_icon_402, &weather_icon_402_mask},
+    {403U, 403U, &weather_icon_403, &weather_icon_403_mask},
+    {404U, 404U, &weather_icon_404, &weather_icon_404_mask},
+    {405U, 405U, &weather_icon_405, &weather_icon_405_mask},
+    {406U, 406U, &weather_icon_406, &weather_icon_406_mask},
+    {407U, 407U, &weather_icon_407, &weather_icon_407_mask},
+    {408U, 408U, &weather_icon_408, &weather_icon_408_mask},
+    {409U, 409U, &weather_icon_409, &weather_icon_409_mask},
+    {410U, 410U, &weather_icon_410, &weather_icon_410_mask},
+    {456U, 456U, &weather_icon_456, &weather_icon_456_mask},
+    {457U, 457U, &weather_icon_457, &weather_icon_457_mask},
+    {499U, 499U, &weather_icon_499, &weather_icon_499_mask},
+    {500U, 500U, &weather_icon_500, &weather_icon_500_mask},
+    {501U, 501U, &weather_icon_501, &weather_icon_501_mask},
+    {502U, 502U, &weather_icon_502, &weather_icon_502_mask},
+    {503U, 503U, &weather_icon_503, &weather_icon_503_mask},
+    {504U, 504U, &weather_icon_504, &weather_icon_504_mask},
+    {507U, 507U, &weather_icon_507, &weather_icon_507_mask},
+    {508U, 508U, &weather_icon_508, &weather_icon_508_mask},
+    {509U, 509U, &weather_icon_509, &weather_icon_509_mask},
+    {510U, 510U, &weather_icon_510, &weather_icon_510_mask},
+    {511U, 511U, &weather_icon_511, &weather_icon_511_mask},
+    {512U, 512U, &weather_icon_512, &weather_icon_512_mask},
+    {513U, 513U, &weather_icon_513, &weather_icon_513_mask},
+    {514U, 514U, &weather_icon_514, &weather_icon_514_mask},
+    {515U, 515U, &weather_icon_515, &weather_icon_515_mask},
+    {900U, 900U, &weather_icon_900, &weather_icon_900_mask},
+    {901U, 901U, &weather_icon_901, &weather_icon_901_mask},
+    {999U, 999U, &weather_icon_999, &weather_icon_999_mask},
 };
+
+static void weather_icon_log(uint16_t requested, const weather_icon_map_t *entry)
+{
+    static uint16_t last_requested = UINT16_MAX;
+    static uint16_t last_source = UINT16_MAX;
+    if (entry == NULL) return;
+    if (requested == last_requested && entry->source_id == last_source) return;
+    last_requested = requested;
+    last_source = entry->source_id;
+    printf("[WEATHER_ICON] request=%u matched=%u %s\n",
+           (unsigned)requested, (unsigned)entry->source_id,
+           requested == entry->source_id ? "direct" : "alias");
+}
+
+static void weather_icon_log_fallback(uint16_t requested)
+{
+    static uint16_t last_requested = UINT16_MAX;
+    if (requested == last_requested) return;
+    last_requested = requested;
+    printf("[WEATHER_ICON] request=%u matched=100 fallback\n", (unsigned)requested);
+}
 
 const egui_image_std_t *ui_weather_icon_get(uint16_t icon_id)
 {
     for (uint32_t i = 0U; i < (sizeof(s_weather_icons) / sizeof(s_weather_icons[0])); i++)
     {
-        if (s_weather_icons[i].icon_id == icon_id) return s_weather_icons[i].image;
+        if (s_weather_icons[i].icon_id == icon_id) { weather_icon_log(icon_id, &s_weather_icons[i]); return s_weather_icons[i].image; }
     }
-    return &weather_icon_999;
+    weather_icon_log_fallback(icon_id);
+    return &weather_icon_100;
 }
 
 const egui_image_std_t *ui_weather_icon_get_mask(uint16_t icon_id)
 {
     for (uint32_t i = 0U; i < (sizeof(s_weather_icons) / sizeof(s_weather_icons[0])); i++)
     {
-        if (s_weather_icons[i].icon_id == icon_id) return s_weather_icons[i].mask;
+        if (s_weather_icons[i].icon_id == icon_id) { weather_icon_log(icon_id, &s_weather_icons[i]); return s_weather_icons[i].mask; }
     }
-    return &weather_icon_999_mask;
+    weather_icon_log_fallback(icon_id);
+    return &weather_icon_100_mask;
 }
 
 #endif /* EGUI_CONFIG_FUNCTION_IMAGE_FORMAT_RGB565 */

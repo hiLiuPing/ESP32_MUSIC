@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "app/app_data.h"
+#include "app/sensor_service.h"
 #include "app/settings_app.h"
 #include "app/system_notify.h"
 #include "app/weather_network.h"
@@ -75,13 +76,29 @@ bool perform_sync() {
         return false;
     }
 
-    const bool ntp_ok = retry_call("NTP", []() { return weather_service_sync_time(); });
+    AppTime network_time = {};
+    const bool ntp_ok = retry_call("NTP", [&network_time]() {
+        return weather_service_sync_time(&network_time);
+    });
+    bool rtc_ok = false;
     if (ntp_ok) {
-        app_data_mark_time_fresh();
+        AppTime verified_time = {};
+        rtc_ok = sensor_service_write_rtc(network_time, &verified_time);
+        if (rtc_ok) {
+            app_data_set_time(verified_time);
+            app_data_mark_time_fresh();
+            Serial.println("[WEATHER] NTP time written to PCF8563");
+        } else {
+            network_time.stale = true;
+            app_data_set_time(network_time);
+            app_data_mark_time_stale();
+            Serial.println("[WEATHER] PCF8563 write/readback failed");
+        }
         DataApp_HomeStatus_Update();
     } else {
         app_data_mark_time_stale();
     }
+    const bool time_ok = ntp_ok && rtc_ok;
 
     WeatherNetworkProfile profile = {};
     bool location_ok = weather_network_get_active(&profile);
@@ -115,8 +132,8 @@ bool perform_sync() {
         return true;
     });
 
-    Serial.printf("[WEATHER] stage summary ntp=%d city=%d current=%d forecast=%d air=%d\n",
-                  ntp_ok ? 1 : 0, location_ok ? 1 : 0, now_ok ? 1 : 0,
+    Serial.printf("[WEATHER] stage summary ntp=%d rtc=%d city=%d current=%d forecast=%d air=%d\n",
+                  ntp_ok ? 1 : 0, rtc_ok ? 1 : 0, location_ok ? 1 : 0, now_ok ? 1 : 0,
                   forecast_ok ? 1 : 0, air_ok ? 1 : 0);
 
     if (forecast_ok) {
@@ -150,9 +167,9 @@ bool perform_sync() {
         app_data_mark_weather_stale();
     }
     weather_network_disconnect();
-    if (!ntp_ok || !location_ok || !now_ok || !forecast_ok || !air_ok) {
+    if (!time_ok || !location_ok || !now_ok || !forecast_ok || !air_ok) {
         Serial.println("[WEATHER] sync completed with failures");
-        mark_sync_failure(ntp_ok, weather_ok);
+        mark_sync_failure(time_ok, weather_ok);
         return false;
     }
     notify_gui();
@@ -183,6 +200,8 @@ bool weather_sync_is_provisioning() {
 
 void weather_sync_task(void *parameter) {
     (void)parameter;
+    (void)xEventGroupWaitBits(HardwareEventGroup, HW_EVENT_INIT_DONE,
+                              pdFALSE, pdTRUE, portMAX_DELAY);
     weather_network_init();
     sync_timer = xTimerCreate("WeatherSyncTimer", pdMS_TO_TICKS(60000U), pdFALSE, nullptr,
                              sync_timer_callback);

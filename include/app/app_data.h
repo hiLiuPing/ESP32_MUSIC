@@ -90,6 +90,7 @@ struct HomeEnvironmentData {
 struct HomeBatteryData {
     uint32_t version;
     uint8_t percent;
+    uint16_t voltage_mv;
     bool charging;
     bool full;
     bool valid;
@@ -148,6 +149,8 @@ void app_data_set_weather_forecast(const WeatherForecastDay *days, uint8_t count
                                    uint32_t version = 0U, bool stale = false);
 bool app_data_get_weather_forecast(WeatherForecastDay *days, uint8_t count,
                                    uint32_t *version = nullptr);
+void app_data_set_home_demo(const AppTime &time, const HomeWeatherData &weather,
+                            const WeatherForecastDay *forecast, uint8_t count);
 void app_data_set_environment(const HomeEnvironmentData &environment);
 void app_data_set_battery(const HomeBatteryData &battery);
 void app_data_update_runtime(uint32_t uptime_ms, uint32_t hardware_bits);

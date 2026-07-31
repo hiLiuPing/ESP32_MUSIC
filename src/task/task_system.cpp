@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "app/app_data.h"
+#include "app/home_demo.h"
 #include "app/music_library.h"
 #include "app/player_app.h"
 #include "task/user_AppDataTask.h"
@@ -78,19 +79,28 @@ void task_system_init() {
                  "AppData");
     require_task(xTaskCreatePinnedToCore(gui_task, "Gui", 6144, nullptr, 2, nullptr, 0),
                  "Gui");
+#if !HOME_DEMO_ENABLE
     require_task(xTaskCreate(weather_sync_task, "WeatherSync", 12288, nullptr, 1,
                              &WeatherSyncTaskHandle),
                  "WeatherSync");
+#else
+    Serial.println("[HomeDemo] weather synchronization disabled");
+#endif
 }
 
-bool task_post_player_command(PlayerCommandType type, int16_t value) {
+bool task_post_player_command(PlayerCommandType type, int16_t value,
+                              bool show_feedback) {
     PlayerCommand command = {};
     command.type = type;
     command.value = value;
+    command.show_feedback = show_feedback;
     const bool posted = (PlayerCommandQueue != nullptr) &&
                         (xQueueSend(PlayerCommandQueue, &command, pdMS_TO_TICKS(20)) == pdTRUE);
     if (!posted) {
         Serial.println("[PLAYER] command queue full");
+        if (show_feedback) {
+            (void)system_notify_post(SystemNotifyType::Music, "操作失败");
+        }
     }
     return posted;
 }

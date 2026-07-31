@@ -5,7 +5,7 @@
 #include <freertos/queue.h>
 
 enum class SystemNotifyType : uint8_t {
-    Info, Warning, Error, Storage, Audio, Player
+    Info, Warning, Error, Storage, Audio, Player, Music
 };
 
 struct SystemNotifyMessage {

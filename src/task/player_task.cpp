@@ -3,6 +3,7 @@
 #include <Audio.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <dsps_fft2r.h>
 #include <esp_system.h>
@@ -48,6 +49,22 @@ uint16_t shuffle_cursor = 0;
 
 void publish(bool force = false);
 void clear_spectrum();
+
+void post_music_feedback(bool enabled, const char *text) {
+    if (enabled && text != nullptr) {
+        (void)system_notify_post(SystemNotifyType::Music, text);
+    }
+}
+
+void post_volume_feedback(bool enabled, int16_t delta) {
+    if (!enabled) return;
+    char text[48] = {};
+    const char *action = delta > 0 ? "音量加" : delta < 0 ? "音量减" : "音量";
+    std::snprintf(text, sizeof(text), "%s %u/%u", action,
+                  static_cast<unsigned>(status.volume),
+                  static_cast<unsigned>(PLAYER_VOLUME_MAX));
+    post_music_feedback(true, text);
+}
 
 void normalize_audio_settings(AudioSettings &settings) {
     settings.volume = static_cast<uint8_t>(
@@ -397,23 +414,25 @@ bool move_shuffle(int direction, uint16_t *index) {
     return true;
 }
 
-void move_track(int direction, bool play, bool automatic = false) {
-    if (status.track_count == 0) return;
+bool move_track(int direction, bool play, bool automatic = false) {
+    if (status.track_count == 0) return false;
 
     uint16_t index = status.track_index;
     if (automatic && status.playback_mode == PlaybackMode::RepeatOne) {
         index = status.track_index;
     } else if (status.playback_mode == PlaybackMode::Shuffle) {
         if (!move_shuffle(direction, &index)) {
-            return;
+            return false;
         }
     } else {
         const int count = status.track_count;
         index = static_cast<uint16_t>((status.track_index + count + direction) % count);
     }
 
-    if (play || track_started) start_track(index);
-    else { select_track(index); publish(true); }
+    if (play || track_started) return start_track(index);
+    select_track(index);
+    publish(true);
+    return true;
 }
 
 void handle_command(const PlayerCommand &command) {
@@ -432,38 +451,91 @@ void handle_command(const PlayerCommand &command) {
             }
             break;
         case PlayerCommandType::Toggle:
+        {
+            bool succeeded = false;
             if (status.state == PlayerState::Playing || status.state == PlayerState::Paused) {
                 if (audio.pauseResume()) {
                     status.state = (status.state == PlayerState::Playing)
                                        ? PlayerState::Paused : PlayerState::Playing;
                     if (status.state == PlayerState::Paused) clear_spectrum();
                     publish(true);
+                    succeeded = true;
                 }
             } else if (status.track_count > 0) {
-                start_track(status.track_index);
+                succeeded = start_track(status.track_index);
+            }
+            if (command.show_feedback) {
+                if (succeeded) {
+                    post_music_feedback(true, status.state == PlayerState::Paused
+                                                  ? "暂停" : "播放");
+                } else if (status.track_count == 0) {
+                    post_music_feedback(true, "没有可播放歌曲");
+                } else if (status.error == PlayerError::None) {
+                    post_music_feedback(true, status.state == PlayerState::Playing
+                                                  ? "暂停失败" : "播放失败");
+                }
             }
             break;
+        }
         case PlayerCommandType::Play:
+        {
+            bool succeeded = false;
             if (status.state == PlayerState::Paused) {
-                if (audio.pauseResume()) { status.state = PlayerState::Playing; publish(true); }
+                if (audio.pauseResume()) {
+                    status.state = PlayerState::Playing;
+                    publish(true);
+                    succeeded = true;
+                }
             } else if (status.track_count > 0) {
-                start_track(status.track_index);
+                succeeded = start_track(status.track_index);
+            }
+            if (command.show_feedback) {
+                if (succeeded) post_music_feedback(true, "播放");
+                else if (status.track_count == 0) post_music_feedback(true, "没有可播放歌曲");
+                else if (status.error == PlayerError::None) post_music_feedback(true, "播放失败");
             }
             break;
+        }
         case PlayerCommandType::Pause:
+        {
+            bool succeeded = false;
             if ((status.state == PlayerState::Playing) && audio.pauseResume()) {
                 status.state = PlayerState::Paused;
                 clear_spectrum();
                 publish(true);
+                succeeded = true;
+            }
+            if (command.show_feedback) {
+                post_music_feedback(true, succeeded ? "暂停" : "暂停失败");
             }
             break;
-        case PlayerCommandType::Previous: move_track(-1, true); break;
-        case PlayerCommandType::Next: move_track(1, true); break;
+        }
+        case PlayerCommandType::Previous:
+        {
+            const bool succeeded = move_track(-1, true);
+            if (command.show_feedback) {
+                if (succeeded) post_music_feedback(true, "上一曲");
+                else if (status.track_count == 0) post_music_feedback(true, "没有可播放歌曲");
+                else if (status.error == PlayerError::None) post_music_feedback(true, "上一曲失败");
+            }
+            break;
+        }
+        case PlayerCommandType::Next:
+        {
+            const bool succeeded = move_track(1, true);
+            if (command.show_feedback) {
+                if (succeeded) post_music_feedback(true, "下一曲");
+                else if (status.track_count == 0) post_music_feedback(true, "没有可播放歌曲");
+                else if (status.error == PlayerError::None) post_music_feedback(true, "下一曲失败");
+            }
+            break;
+        }
         case PlayerCommandType::SetVolume:
             status.volume = constrain(command.value, PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX);
             audio.setVolume(status.volume);
             persist_runtime_audio_settings();
             publish(true);
+            post_volume_feedback(command.show_feedback, 0);
             break;
         case PlayerCommandType::ChangeVolume:
             status.volume = constrain(static_cast<int>(status.volume) + command.value,
@@ -471,6 +543,7 @@ void handle_command(const PlayerCommand &command) {
             audio.setVolume(status.volume);
             persist_runtime_audio_settings();
             publish(true);
+            post_volume_feedback(command.show_feedback, command.value);
             break;
         case PlayerCommandType::CyclePlaybackMode:
             status.playback_mode = static_cast<PlaybackMode>(
