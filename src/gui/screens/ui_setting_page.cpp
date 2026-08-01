@@ -5,6 +5,7 @@
 #include "anim/egui_animation_value.h"
 #include "anim/egui_interpolator_anticipate_overshoot.h"
 #include "app/settings_app.h"
+#include "app/system_notify.h"
 #include "gui/egui_port.h"
 #include "gui/gui_common.h"
 #include "task/weather_sync_task.h"
@@ -16,13 +17,18 @@ uint8_t selected = 0U;
 bool editing = false;
 bool navigation_active = false;
 bool last_provisioning = false;
+bool manual_sync_requested = false;
+bool last_manual_sync_ready = true;
+uint32_t last_manual_sync_ms = 0U;
 int16_t selection_box_y = 25;
 egui_animation_value_t selection_animation = {};
 egui_interpolator_anticipate_overshoot_t selection_interpolator = {};
-constexpr uint8_t ITEM_COUNT = 5U;
+constexpr uint8_t ITEM_COUNT = 6U;
 constexpr uint16_t SELECTION_ANIMATION_MS = 240U;
+constexpr uint32_t MANUAL_SYNC_COOLDOWN_MS = 30000U;
 
-const char *labels[ITEM_COUNT] = {"POETRY POPUP", "POETRY DURATION", "WEATHER SYNC", "WIFI CONFIG", "SCREEN SLEEP"};
+const char *labels[ITEM_COUNT] = {"POETRY POPUP", "POETRY DURATION", "WEATHER SYNC",
+                                  "SYNC NOW", "WIFI CONFIG", "SCREEN SLEEP"};
 
 uint16_t adjust_interval(uint16_t value, int delta) {
     if (value == 0U) return delta > 0 ? 30U : 0U;
@@ -57,6 +63,31 @@ void animate_selection_to(uint8_t item) {
     egui_animation_start(EGUI_ANIM_OF(&selection_animation));
 }
 
+bool manual_sync_ready(uint32_t now) {
+    return !manual_sync_requested ||
+           static_cast<uint32_t>(now - last_manual_sync_ms) >=
+               MANUAL_SYNC_COOLDOWN_MS;
+}
+
+bool request_manual_sync() {
+    const uint32_t now = millis();
+    if (!manual_sync_ready(now)) {
+        Serial.println("[SETTING] manual sync ignored: cooldown");
+        (void)system_notify_post(SystemNotifyType::Info, "SYNC WAIT");
+        return true;
+    }
+    if (weather_sync_request(WEATHER_SYNC_MANUAL_NOW)) {
+        manual_sync_requested = true;
+        last_manual_sync_ms = now;
+        Serial.println("[SETTING] manual sync requested");
+        (void)system_notify_post(SystemNotifyType::Info, "SYNC REQUESTED");
+    } else {
+        Serial.println("[SETTING] manual sync request failed");
+        (void)system_notify_post(SystemNotifyType::Warning, "SYNC REQUEST FAILED");
+    }
+    return true;
+}
+
 void format_value(uint8_t i, char *out, size_t size) {
     switch (i) {
         case 0:
@@ -70,8 +101,11 @@ void format_value(uint8_t i, char *out, size_t size) {
                           settings.weather_interval_min ? "%u MIN" : "OFF",
                           settings.weather_interval_min);
             break;
-        case 3: std::snprintf(out, size, "%s", weather_sync_is_provisioning() ? "STOP" : "START"); break;
-        case 4: std::snprintf(out, size, settings.screen_idle_min ? "%u MIN" : "OFF", settings.screen_idle_min); break;
+        case 3:
+            std::snprintf(out, size, "%s", manual_sync_ready(millis()) ? "RUN" : "WAIT");
+            break;
+        case 4: std::snprintf(out, size, "%s", weather_sync_is_provisioning() ? "STOP" : "START"); break;
+        case 5: std::snprintf(out, size, settings.screen_idle_min ? "%u MIN" : "OFF", settings.screen_idle_min); break;
         default: out[0] = '\0'; break;
     }
 }
@@ -95,7 +129,10 @@ void draw(egui_canvas_t *canvas) {
         egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4), value, 270, y, color, EGUI_ALPHA_100);
     }
     if (navigation_active) {
-        gui_draw_text(canvas, 12, 153, editing ? "MIDDLE SAVE" : "MIDDLE EDIT");
+        const char *hint = editing ? "MIDDLE SAVE" :
+                           selected == 3U ? "MIDDLE SYNC" :
+                           selected == 4U ? "MIDDLE WIFI" : "MIDDLE EDIT";
+        gui_draw_text(canvas, 12, 153, hint);
     }
 }
 
@@ -111,7 +148,8 @@ void adjust(int delta) {
                 adjust_interval(settings.weather_interval_min, delta);
             break;
         case 3: break;
-        case 4: settings.screen_idle_min = settings.screen_idle_min == 0U ? 1U : static_cast<uint16_t>(settings.screen_idle_min + delta); if (settings.screen_idle_min > 360U) settings.screen_idle_min = 0U; break;
+        case 4: break;
+        case 5: settings.screen_idle_min = settings.screen_idle_min == 0U ? 1U : static_cast<uint16_t>(settings.screen_idle_min + delta); if (settings.screen_idle_min > 360U) settings.screen_idle_min = 0U; break;
     }
 }
 
@@ -120,6 +158,7 @@ void init() {
     settings = settings_app_get();
     selection_box_y = 25;
     last_provisioning = weather_sync_is_provisioning();
+    last_manual_sync_ready = manual_sync_ready(millis());
 }
 void enter() {
     egui_animation_stop(EGUI_ANIM_OF(&selection_animation));
@@ -129,6 +168,7 @@ void enter() {
     editing = false;
     navigation_active = false;
     last_provisioning = weather_sync_is_provisioning();
+    last_manual_sync_ready = manual_sync_ready(millis());
 }
 void exit() {}
 void navigation_changed(bool active) {
@@ -153,6 +193,9 @@ bool key_consume(const KeyEvent &event) {
     }
     if (event.id == KeyId::Middle && event.gesture == KeyGesture::Click) {
         if (selected == 3U) {
+            return request_manual_sync();
+        }
+        if (selected == 4U) {
             const bool request_stop = weather_sync_is_provisioning();
             (void)weather_sync_request(request_stop ? WEATHER_SYNC_STOP_AP
                                                      : WEATHER_SYNC_START_AP);
@@ -178,9 +221,12 @@ bool key_consume(const KeyEvent &event) {
 }
 bool service() {
     const bool provisioning = weather_sync_is_provisioning();
-    if (provisioning == last_provisioning) return false;
+    const bool sync_ready = manual_sync_ready(millis());
+    const bool changed = provisioning != last_provisioning ||
+                         sync_ready != last_manual_sync_ready;
     last_provisioning = provisioning;
-    return true;
+    last_manual_sync_ready = sync_ready;
+    return changed;
 }
 bool update_status(const PlayerStatus &) { return false; }
 GuiPageDescriptor descriptor = {UiPage::Setting, init, enter, exit, key_consume, service, update_status, EGUI_VIEW_OF(&view), "setting", true, false, navigation_changed};

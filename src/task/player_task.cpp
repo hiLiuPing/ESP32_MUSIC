@@ -98,6 +98,56 @@ void post_music_feedback(bool enabled, const char *text) {
     }
 }
 
+size_t utf8_sequence_length(char lead) {
+    const uint8_t byte = static_cast<uint8_t>(lead);
+    if ((byte & 0x80U) == 0U) return 1U;
+    if ((byte & 0xE0U) == 0xC0U) return 2U;
+    if ((byte & 0xF0U) == 0xE0U) return 3U;
+    if ((byte & 0xF8U) == 0xF0U) return 4U;
+    return 0U;
+}
+
+bool utf8_continuation(char byte) {
+    return (static_cast<uint8_t>(byte) & 0xC0U) == 0x80U;
+}
+
+void append_utf8_truncated(char *destination, size_t destination_size,
+                           const char *source) {
+    if (destination == nullptr || destination_size == 0U || source == nullptr) {
+        return;
+    }
+    size_t used = std::strlen(destination);
+    if (used >= destination_size - 1U) return;
+
+    while (*source != '\0') {
+        const size_t bytes = utf8_sequence_length(*source);
+        if (bytes == 0U || used + bytes >= destination_size) break;
+        bool complete = true;
+        for (size_t index = 1U; index < bytes; ++index) {
+            if (source[index] == '\0' || !utf8_continuation(source[index])) {
+                complete = false;
+                break;
+            }
+        }
+        if (!complete) break;
+        std::memcpy(destination + used, source, bytes);
+        used += bytes;
+        destination[used] = '\0';
+        source += bytes;
+    }
+}
+
+void post_track_feedback(bool enabled, const char *action) {
+    if (!enabled || action == nullptr) return;
+    char text[sizeof(SystemNotifyMessage::text)] = {};
+    std::snprintf(text, sizeof(text), "%s", action);
+    if (status.file_name[0] != '\0') {
+        append_utf8_truncated(text, sizeof(text), " ");
+        append_utf8_truncated(text, sizeof(text), status.file_name);
+    }
+    post_music_feedback(true, text);
+}
+
 void post_volume_feedback(bool enabled, int16_t delta) {
     if (!enabled) return;
     char text[48] = {};
@@ -309,7 +359,7 @@ void analyze_pcm(int16_t *buffer, uint16_t frame_count) {
 }
 
 void build_shuffle(uint16_t current_index) {
-    shuffle_count = status.track_count;
+    shuffle_count = status.playlist_track_count;
     shuffle_cursor = 0;
     if (shuffle_count == 0) {
         return;
@@ -329,10 +379,16 @@ void build_shuffle(uint16_t current_index) {
 }
 
 void select_track(uint16_t index) {
-    status.track_index = index;
+    uint16_t global_index = 0U;
     char path[PLAYER_PATH_LENGTH] = {};
-    music_library_get(index, path, sizeof(path), status.file_name,
-                      sizeof(status.file_name));
+    if (!music_library_playlist_track_get(status.playlist_index, index,
+                                          &global_index, path, sizeof(path),
+                                          status.file_name,
+                                          sizeof(status.file_name))) {
+        return;
+    }
+    status.track_index = global_index;
+    status.playlist_track_index = index;
     status.elapsed_seconds = 0;
     status.duration_seconds = 0;
 }
@@ -340,6 +396,7 @@ void select_track(uint16_t index) {
 bool start_track_once(uint16_t index) {
     char path[PLAYER_PATH_LENGTH] = {};
     char name[PLAYER_NAME_LENGTH] = {};
+    uint16_t global_index = 0U;
     if (!sd_ready) {
         status.state = PlayerState::NoSd;
         status.error = PlayerError::SdUnavailable;
@@ -354,7 +411,9 @@ bool start_track_once(uint16_t index) {
         publish(true);
         return false;
     }
-    if (!music_library_get(index, path, sizeof(path), name, sizeof(name))) {
+    if (!music_library_playlist_track_get(status.playlist_index, index,
+                                          &global_index, path, sizeof(path),
+                                          name, sizeof(name))) {
         status.state = PlayerState::Error;
         status.error = PlayerError::TrackOutOfRange;
         clear_spectrum();
@@ -365,7 +424,8 @@ bool start_track_once(uint16_t index) {
     audio.stopSong();
     eof_received = false;
     clear_spectrum();
-    status.track_index = index;
+    status.track_index = global_index;
+    status.playlist_track_index = index;
     std::snprintf(status.file_name, sizeof(status.file_name), "%s", name);
     if (ends_with_ignore_case(path, ".flac") && !audio_input_uses_psram) {
         track_started = false;
@@ -410,15 +470,15 @@ void set_no_playable_tracks() {
 bool start_track_with_fallback(uint16_t index, int direction = 1,
                                bool reset_attempts = true) {
     last_start_skipped = false;
-    if (status.track_count == 0U) return false;
+    if (status.playlist_track_count == 0U) return false;
     if (reset_attempts) reset_track_attempts();
 
     const int step = direction < 0 ? -1 : 1;
     uint16_t candidate = index;
     bool skipped = !reset_attempts;
-    for (uint16_t checked = 0U; checked < status.track_count; ++checked) {
+    for (uint16_t checked = 0U; checked < status.playlist_track_count; ++checked) {
         if (track_was_attempted(candidate)) {
-            const int count = status.track_count;
+            const int count = status.playlist_track_count;
             candidate = static_cast<uint16_t>((candidate + count + step) % count);
             continue;
         }
@@ -435,7 +495,7 @@ bool start_track_with_fallback(uint16_t index, int direction = 1,
         }
         if (status.error != PlayerError::OpenFailed) return false;
         skipped = true;
-        const int count = status.track_count;
+        const int count = status.playlist_track_count;
         candidate = static_cast<uint16_t>((candidate + count + step) % count);
     }
 
@@ -460,6 +520,10 @@ void rescan_library() {
     else xEventGroupClearBits(HardwareEventGroup, HW_EVENT_SD_READY);
     if (!sd_ready) {
         status.track_count = 0;
+        status.library_version = 0U;
+        status.playlist_index = 0U;
+        status.playlist_track_index = 0U;
+        status.playlist_track_count = 0U;
         status.file_name[0] = '\0';
         status.state = PlayerState::NoSd;
         status.error = PlayerError::SdUnavailable;
@@ -470,7 +534,11 @@ void rescan_library() {
 
     music_library_scan(bsp_storage_fs());
     log_psram_usage("after library scan");
+    status.library_version = music_library_version();
     status.track_count = static_cast<uint16_t>(music_library_count());
+    status.playlist_index = 0U;
+    status.playlist_track_index = 0U;
+    status.playlist_track_count = status.track_count;
     if (status.track_count == 0) {
         status.track_index = 0;
         status.file_name[0] = '\0';
@@ -482,21 +550,23 @@ void rescan_library() {
         status.error = codec_ready ? PlayerError::None : PlayerError::CodecUnavailable;
         xEventGroupSetBits(HardwareEventGroup, HW_EVENT_LIBRARY_READY);
     }
-    build_shuffle(status.track_index);
-    Serial.printf("[PLAYER] scan complete, %u track(s)\n", status.track_count);
+    build_shuffle(status.playlist_track_index);
+    Serial.printf("[PLAYER] scan complete, %u track(s), %u playlist(s)\n",
+                  status.track_count,
+                  static_cast<unsigned>(music_library_playlist_count()));
     publish(true);
 }
 
 bool move_shuffle(int direction, uint16_t *index) {
-    if (index == nullptr || status.track_count == 0) {
+    if (index == nullptr || status.playlist_track_count == 0) {
         return false;
     }
-    if (shuffle_count != status.track_count ||
-        shuffle_order[shuffle_cursor] != status.track_index) {
-        build_shuffle(status.track_index);
+    if (shuffle_count != status.playlist_track_count ||
+        shuffle_order[shuffle_cursor] != status.playlist_track_index) {
+        build_shuffle(status.playlist_track_index);
     }
-    if (status.track_count == 1) {
-        *index = status.track_index;
+    if (status.playlist_track_count == 1) {
+        *index = status.playlist_track_index;
         return true;
     }
     if (direction < 0) {
@@ -507,7 +577,7 @@ bool move_shuffle(int direction, uint16_t *index) {
     } else if (shuffle_cursor + 1 < shuffle_count) {
         ++shuffle_cursor;
     } else {
-        build_shuffle(status.track_index);
+        build_shuffle(status.playlist_track_index);
         shuffle_cursor = 1;
     }
     *index = shuffle_order[shuffle_cursor];
@@ -516,21 +586,21 @@ bool move_shuffle(int direction, uint16_t *index) {
 
 bool move_track(int direction, bool play, bool automatic = false,
                 bool current_failed = false) {
-    if (status.track_count == 0) return false;
+    if (status.playlist_track_count == 0) return false;
 
-    uint16_t index = status.track_index;
+    uint16_t index = status.playlist_track_index;
     if (current_failed) {
-        const int count = status.track_count;
-        index = static_cast<uint16_t>((status.track_index + count + direction) % count);
+        const int count = status.playlist_track_count;
+        index = static_cast<uint16_t>((status.playlist_track_index + count + direction) % count);
     } else if (automatic && status.playback_mode == PlaybackMode::RepeatOne) {
-        index = status.track_index;
+        index = status.playlist_track_index;
     } else if (status.playback_mode == PlaybackMode::Shuffle) {
         if (!move_shuffle(direction, &index)) {
             return false;
         }
     } else {
-        const int count = status.track_count;
-        index = static_cast<uint16_t>((status.track_index + count + direction) % count);
+        const int count = status.playlist_track_count;
+        index = static_cast<uint16_t>((status.playlist_track_index + count + direction) % count);
     }
 
     if (play || track_started) {
@@ -545,11 +615,20 @@ void handle_command(const PlayerCommand &command) {
     last_start_skipped = false;
     switch (command.type) {
         case PlayerCommandType::PlaySelected:
-            if ((command.value >= 0) && (command.value < status.track_count)) {
-                const uint16_t index = static_cast<uint16_t>(command.value);
+        {
+            size_t playlist_track_count = 0U;
+            const bool playlist_valid = music_library_playlist_get(
+                command.playlist_index, nullptr, 0U, &playlist_track_count);
+            if (playlist_valid &&
+                command.playlist_track_index < playlist_track_count) {
+                status.playlist_index = command.playlist_index;
+                status.playlist_track_index = command.playlist_track_index;
+                status.playlist_track_count =
+                    static_cast<uint16_t>(playlist_track_count);
+                const uint16_t index = command.playlist_track_index;
                 if (start_track_with_fallback(index) &&
                     status.playback_mode == PlaybackMode::Shuffle) {
-                    build_shuffle(status.track_index);
+                    build_shuffle(status.playlist_track_index);
                 }
             } else {
                 status.state = PlayerState::Error;
@@ -558,6 +637,7 @@ void handle_command(const PlayerCommand &command) {
                 publish(true);
             }
             break;
+        }
         case PlayerCommandType::Toggle:
         {
             bool succeeded = false;
@@ -570,7 +650,7 @@ void handle_command(const PlayerCommand &command) {
                     succeeded = true;
                 }
             } else if (status.track_count > 0) {
-                succeeded = start_track_with_fallback(status.track_index);
+                succeeded = start_track_with_fallback(status.playlist_track_index);
             }
             if (command.show_feedback) {
                 if (succeeded && !last_start_skipped) {
@@ -595,7 +675,7 @@ void handle_command(const PlayerCommand &command) {
                     succeeded = true;
                 }
             } else if (status.track_count > 0) {
-                succeeded = start_track_with_fallback(status.track_index);
+                succeeded = start_track_with_fallback(status.playlist_track_index);
             }
             if (command.show_feedback) {
                 if (succeeded && !last_start_skipped) post_music_feedback(true, "播放");
@@ -622,7 +702,7 @@ void handle_command(const PlayerCommand &command) {
         {
             const bool succeeded = move_track(-1, true);
             if (command.show_feedback) {
-                if (succeeded && !last_start_skipped) post_music_feedback(true, "上一曲");
+                if (succeeded && !last_start_skipped) post_track_feedback(true, "上一曲");
                 else if (status.track_count == 0) post_music_feedback(true, "没有可播放歌曲");
                 else if (status.error == PlayerError::None) post_music_feedback(true, "上一曲失败");
             }
@@ -632,7 +712,7 @@ void handle_command(const PlayerCommand &command) {
         {
             const bool succeeded = move_track(1, true);
             if (command.show_feedback) {
-                if (succeeded && !last_start_skipped) post_music_feedback(true, "下一曲");
+                if (succeeded && !last_start_skipped) post_track_feedback(true, "下一曲");
                 else if (status.track_count == 0) post_music_feedback(true, "没有可播放歌曲");
                 else if (status.error == PlayerError::None) post_music_feedback(true, "下一曲失败");
             }
@@ -657,7 +737,7 @@ void handle_command(const PlayerCommand &command) {
             status.playback_mode = static_cast<PlaybackMode>(
                 (static_cast<uint8_t>(status.playback_mode) + 1U) % 3U);
             if (status.playback_mode == PlaybackMode::Shuffle) {
-                build_shuffle(status.track_index);
+                build_shuffle(status.playlist_track_index);
             }
             persist_runtime_audio_settings();
             publish(true);

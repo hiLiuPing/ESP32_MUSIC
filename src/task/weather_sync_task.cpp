@@ -233,6 +233,12 @@ void weather_sync_task(void *parameter) {
             pending &= ~WEATHER_SYNC_STOP_AP;
             weather_network_stop_ap();
         }
+        if ((pending & WEATHER_SYNC_MANUAL_NOW) != 0U) {
+            pending &= ~WEATHER_SYNC_MANUAL_NOW;
+            pending |= WEATHER_SYNC_NOW;
+            force_sync = true;
+            Serial.println("[WEATHER] manual sync requested");
+        }
         if ((pending & WEATHER_SYNC_SETTINGS_CHANGED) != 0U) {
             pending &= ~WEATHER_SYNC_SETTINGS_CHANGED;
             settings = settings_app_get();
@@ -248,11 +254,12 @@ void weather_sync_task(void *parameter) {
         if (due && !weather_network_ap_active() && (settings.weather_interval_min != 0U || force_sync)) {
             if (!weather_network_has_profiles()) {
                 pending &= ~WEATHER_SYNC_NOW;
+                force_sync = false;
                 show_ap_notice();
                 continue;
             }
             pending &= ~WEATHER_SYNC_NOW;
-            const bool success = perform_sync();
+            (void)perform_sync();
             force_sync = false;
             settings = settings_app_get();
             if (settings.weather_interval_min != 0U) arm_timer(settings.weather_interval_min);

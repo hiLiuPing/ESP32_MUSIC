@@ -10,7 +10,7 @@
 #include "gui/ui_popups.h"
 
 namespace {
-constexpr size_t MAX_PAGES = 7;
+constexpr size_t MAX_PAGES = 6;
 constexpr size_t HISTORY_DEPTH = 8;
 
 GuiPageDescriptor *registered_pages[MAX_PAGES] = {};

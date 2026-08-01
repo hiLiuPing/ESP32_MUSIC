@@ -65,16 +65,24 @@ void hardware_init_task(void *parameter) {
         system_notify_post(SystemNotifyType::Storage, "SD CARD UNAVAILABLE");
     }
 
+    bool littlefs_resources_ready = littlefs_ready;
     if (littlefs_ready && sd_ready) {
         Serial.println("[HW] LittleFS resource sync");
         if (bsp_littlefs_sync_from(bsp_storage_fs(), "/data")) {
             Serial.println("[HW] LittleFS resource sync complete");
         } else {
             Serial.println("[HW] LittleFS resource sync failed");
+            littlefs_resources_ready = false;
             system_notify_post(SystemNotifyType::Storage, "RESOURCE SYNC FAILED");
         }
     } else {
         Serial.println("[HW] LittleFS resource sync skipped");
+    }
+    if (littlefs_resources_ready) {
+        xEventGroupSetBits(HardwareEventGroup, HW_EVENT_LITTLEFS_READY);
+        if (GuiWakeSemaphore != nullptr) {
+            xSemaphoreGive(GuiWakeSemaphore);
+        }
     }
 
     Serial.println("[HW] WM8978 init");

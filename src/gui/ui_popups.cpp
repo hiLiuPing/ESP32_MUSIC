@@ -306,6 +306,9 @@ void ui_system_popup_show(const SystemNotifyMessage &message) {
         system_phase != SystemPopupPhase::Idle &&
         system_message.type == SystemNotifyType::Music;
     system_message = message;
+    if (system_message.type == SystemNotifyType::Music) {
+        (void)ui_heiti_font_cache_text(16U, system_message.text);
+    }
     const bool error_kind = message.type == SystemNotifyType::Error ||
                             message.type == SystemNotifyType::Storage ||
                             message.type == SystemNotifyType::Audio ||

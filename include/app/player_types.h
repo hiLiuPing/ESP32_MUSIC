@@ -69,6 +69,8 @@ enum class PlayerCommandType : uint8_t {
 struct PlayerCommand {
     PlayerCommandType type;
     int16_t value;
+    uint16_t playlist_index;
+    uint16_t playlist_track_index;
     AudioSettings audio_settings;
     bool persist_audio_settings;
     bool restart_sleep_timer;
@@ -77,10 +79,14 @@ struct PlayerCommand {
 
 struct PlayerStatus {
     uint32_t version;
+    uint32_t library_version;
     PlayerState state;
     PlayerError error;
     uint16_t track_index;
     uint16_t track_count;
+    uint16_t playlist_index;
+    uint16_t playlist_track_index;
+    uint16_t playlist_track_count;
     uint32_t elapsed_seconds;
     uint32_t duration_seconds;
     uint8_t volume;

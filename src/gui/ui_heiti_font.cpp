@@ -15,6 +15,7 @@ constexpr uint8_t FMT0_FULL = 0U;
 constexpr uint8_t SPARSE_FULL = 1U;
 constexpr uint8_t FMT0_TINY = 2U;
 constexpr uint8_t SPARSE_TINY = 3U;
+constexpr uint32_t FONT_OPEN_RETRY_MS = 200U;
 constexpr uint8_t GLYPH_CACHE_SLOTS = 32U;
 constexpr uint16_t GLYPH_CACHE_BITMAP_SIZE = 256U;
 
@@ -41,6 +42,7 @@ struct FontContext {
     uint8_t requested_size;
     bool ready;
     bool attempted;
+    uint32_t next_retry_ms;
     File file;
     uint8_t bpp;
     uint16_t line_height;
@@ -343,10 +345,18 @@ bool get_glyph(FontContext &ctx, uint32_t glyph, GlyphDsc *dsc, uint8_t *bitmap,
 
 bool open_context(FontContext &ctx) {
     if (ctx.ready) return true;
-    if (ctx.attempted) return false;
+    const uint32_t now = millis();
+    if (ctx.attempted && static_cast<int32_t>(now - ctx.next_retry_ms) < 0) return false;
     if (!bsp_littlefs_available()) return false;
+    auto fail = [&ctx]() {
+        if (ctx.file) ctx.file.close();
+        ctx.ready = false;
+        return false;
+    };
     ctx.attempted = true;
-    if (!bsp_littlefs_lock(pdMS_TO_TICKS(100U))) { ctx.attempted = false; return false; }
+    ctx.next_retry_ms = now + FONT_OPEN_RETRY_MS;
+    if (ctx.file) ctx.file.close();
+    if (!bsp_littlefs_lock(pdMS_TO_TICKS(100U))) return false;
     ctx.file = bsp_littlefs_fs().open(ctx.path, "r");
     bsp_littlefs_unlock();
     if (!ctx.file) return false;
@@ -354,7 +364,7 @@ bool open_context(FontContext &ctx) {
     uint8_t head[48] = {};
     uint32_t head_len = 0U;
     if (!read_at(ctx, 0U, head, sizeof(head)) || std::memcmp(head + 4, "head", 4U) != 0 ||
-        (head_len = rd32(head), head_len < sizeof(head))) return false;
+        (head_len = rd32(head), head_len < sizeof(head))) return fail();
     const int16_t ascent = rd16s(head + 16);
     const int16_t descent = rd16s(head + 18);
     const int16_t typo_ascent = rd16s(head + 20);
@@ -369,7 +379,7 @@ bool open_context(FontContext &ctx) {
     } else {
         const int32_t fallback_line_height = static_cast<int32_t>(ascent) - descent;
         if (ascent <= 0 || descent > 0 || fallback_line_height <= 0 ||
-            fallback_line_height > 0xFFFFL) return false;
+            fallback_line_height > 0xFFFFL) return fail();
         ctx.line_height = static_cast<uint16_t>(fallback_line_height);
         ctx.baseline = ascent;
     }
@@ -381,7 +391,7 @@ bool open_context(FontContext &ctx) {
     ctx.wh_bits = head[39];
     ctx.aw_bits = head[40];
     ctx.compression = head[41];
-    if (ctx.bpp == 0U || ctx.bpp > 8U || ctx.loca_format > 1U) return false;
+    if (ctx.bpp == 0U || ctx.bpp > 8U || ctx.loca_format > 1U) return fail();
 
     uint32_t cmap_len = 0U;
     uint32_t loca_len = 0U;
@@ -390,11 +400,11 @@ bool open_context(FontContext &ctx) {
     const uint32_t loca_start = cmap_start + (section_header(ctx, cmap_start, "cmap", &cmap_len) ? cmap_len : 0U);
     const uint32_t glyf_start = loca_start + (section_header(ctx, loca_start, "loca", &loca_len) ? loca_len : 0U);
     if (!section_header(ctx, cmap_start, "cmap", &cmap_len) || !section_header(ctx, loca_start, "loca", &loca_len) ||
-        !section_header(ctx, glyf_start, "glyf", &glyf_len)) return false;
+        !section_header(ctx, glyf_start, "glyf", &glyf_len)) return fail();
     uint32_t cmap_count = 0U;
     uint32_t loca_count = 0U;
     if (!read_u32(ctx, cmap_start + 8U, &cmap_count) || cmap_count == 0U || cmap_count > MAX_CMAP ||
-        !read_u32(ctx, loca_start + 8U, &loca_count) || loca_count == 0U) return false;
+        !read_u32(ctx, loca_start + 8U, &loca_count) || loca_count == 0U) return fail();
     ctx.cmap_start = cmap_start;
     ctx.cmap_count = static_cast<uint16_t>(cmap_count);
     ctx.loca_data_start = loca_start + 12U;
@@ -404,7 +414,7 @@ bool open_context(FontContext &ctx) {
     ctx.glyf_length = glyf_len;
     for (uint16_t i = 0U; i < ctx.cmap_count; ++i) {
         uint8_t raw[16] = {};
-        if (!read_at(ctx, cmap_start + 12U + static_cast<uint32_t>(i) * 16U, raw, sizeof(raw))) return false;
+        if (!read_at(ctx, cmap_start + 12U + static_cast<uint32_t>(i) * 16U, raw, sizeof(raw))) return fail();
         CmapEntry &entry = ctx.cmap[i];
         entry.data_offset = rd32(raw);
         entry.range_start = rd32(raw + 4);
@@ -412,7 +422,7 @@ bool open_context(FontContext &ctx) {
         entry.glyph_id_start = rd16(raw + 10);
         entry.data_entries_count = rd16(raw + 12);
         entry.format = raw[14];
-        if (entry.format > SPARSE_TINY) return false;
+        if (entry.format > SPARSE_TINY) return fail();
     }
     ctx.ready = true;
     return true;
@@ -805,6 +815,30 @@ bool ui_heiti_font_is_ready(uint8_t size) {
     FontContext *ctx = select_context(size);
     (void)ui_heiti_font_get(size);
     return ctx->ready;
+}
+
+bool ui_heiti_font_warm_text(uint8_t size, const char *text) {
+    FontContext *ctx = select_context(size);
+    if (text == nullptr || !ui_heiti_font_is_ready(size)) return false;
+    bool ready = true;
+    while (*text != '\0') {
+        if (*text == '\r' || *text == '\n') {
+            ++text;
+            continue;
+        }
+        uint32_t cp = 0U;
+        const int bytes = utf8_decode(text, &cp);
+        if (bytes <= 0) return false;
+        if (cp >= 0x80U) {
+            egui_dim_t advance = 0;
+            if (!draw_glyph(*ctx, nullptr, cp, 0, 0, EGUI_COLOR_BLACK,
+                            EGUI_ALPHA_100, &advance)) {
+                ready = false;
+            }
+        }
+        text += bytes;
+    }
+    return ready;
 }
 
 bool ui_heiti_font_poetry_cache_init(size_t max_bytes) {

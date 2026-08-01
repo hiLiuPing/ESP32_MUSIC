@@ -6,11 +6,11 @@ WM8978 codec. The firmware is split into four layers:
 - `src/bsp`: pins and hardware drivers for display, SD, codec and input.
 - `src/app`: command parser, music library and shared player state.
 - `src/task`: FreeRTOS object creation and hardware/input/player/GUI tasks.
-- `src/gui`: boot, home, music, weather, poetry and setting pages.
+- `src/gui`: boot, home, music, poetry and setting pages.
 
 The player does not start playback at boot. It recursively indexes up to 1000 MP3,
-AAC, M4A, WAV and FLAC files below `/music` into a PSRAM-backed path cache and
-waits on the first track. Weather/time
+AAC, M4A, WAV and FLAC files below `/music` into a PSRAM-backed path and playlist
+metadata cache, then waits on the first track. Weather/time
 synchronization is disabled by default; when enabled in Setting, the firmware
 uses the saved Wi-Fi profile to query NTP and QWeather on the configured interval.
 
@@ -31,7 +31,7 @@ device closes the AP and performs an immediate synchronization.
 Use `115200 8N1` and terminate every command with CR or LF.
 
 ```text
-page home|music|weather|poetry|setting
+page home|music|poetry|setting
 page-prev
 page-next
 up
@@ -70,8 +70,10 @@ Playback continues after leaving the music page.
 On the music page, left and right move across volume, playback mode, previous,
 play/pause, next and playlist. The middle key activates the selected control.
 Volume and playlist open full-screen subviews; hold the middle key to return to
-the control row. Playback mode cycles through repeat-all, repeat-one and a
-shuffle queue that supports moving backward through recently played entries.
+the previous music subview. The playlist browser first shows `ALL MUSIC` and
+the non-empty folders directly below `/music`; nested songs belong to their
+top-level folder. Playback mode cycles through repeat-all, repeat-one and a
+shuffle queue, with all track movement limited to the selected playlist.
 
 ## Build
 

@@ -173,6 +173,7 @@ static ui_home_style_t s_home_render_style;
 static WeatherScene_t s_home_render_scene = WEATHER_SCENE_UNKNOWN;
 static uint32_t s_home_random_state = 0x6D2B79F5U;
 static const egui_font_t *s_home_heiti_16 = NULL;
+static uint8_t s_home_heiti_16_ready = 0U;
 
 static void ui_HomePage_on_draw(egui_view_t *self);
 static void ui_HomePage_draw_scene(egui_canvas_t *canvas);
@@ -190,6 +191,7 @@ static uint32_t ui_HomePage_foreground_on_sky_rgb(void);
 static uint32_t ui_HomePage_foreground_on_ground_rgb(void);
 static void ui_HomePage_update_render_snapshot(const DataApp_HomeStatus_t *status);
 static uint8_t ui_HomePage_battery_update(const DataApp_HomeStatus_t *status, uint32_t now, uint8_t restart);
+static uint8_t ui_HomePage_warm_date_font(void);
 static void ui_HomePage_draw_battery(egui_canvas_t *canvas,
                                      const DataApp_HomeStatus_t *status,
                                      uint32_t top_text_rgb);
@@ -1298,6 +1300,7 @@ void ui_HomePage_screen_init(void)
     memset(&s_home_battery_state, 0, sizeof(s_home_battery_state));
     s_home_battery_state.visible = 1U;
     s_home_heiti_16 = NULL;
+    s_home_heiti_16_ready = ui_HomePage_warm_date_font();
     DataApp_HomeStatus_Get(&status);
     ui_HomePage_update_render_snapshot(&status);
     (void)ui_HomePage_battery_update(&status, s_home_scene_tick, 1U);
@@ -1318,6 +1321,7 @@ void ui_HomePage_screen_enter(void)
     s_home_top_carousel_index = 0U;
     s_home_scene_state.is_valid = 0U;
     s_home_weather_state.is_valid = 0U;
+    s_home_heiti_16_ready = ui_HomePage_warm_date_font();
     DataApp_HomeStatus_Get(&status);
     ui_HomePage_update_render_snapshot(&status);
     (void)ui_HomePage_battery_update(&status, s_home_scene_tick, 1U);
@@ -1440,6 +1444,14 @@ static void ui_HomePage_timer_cb(egui_timer_t *timer)
     now = egui_timer_get_current_time();
     DataApp_HomeStatus_Get(&status);
     ui_HomePage_update_render_snapshot(&status);
+    {
+        const uint8_t heiti_ready = ui_HomePage_warm_date_font();
+        if (heiti_ready != s_home_heiti_16_ready)
+        {
+            s_home_heiti_16_ready = heiti_ready;
+            refresh_status = 1U;
+        }
+    }
     if (s_home_animation_enabled || (!status.charging && !status.charge_full))
     {
         if (ui_HomePage_battery_update(&status, now, s_home_battery_state.resume_pending) != 0U)
@@ -1897,6 +1909,17 @@ static egui_dim_t ui_HomePage_draw_text_advance(egui_canvas_t *canvas,
     return width;
 }
 
+static uint8_t ui_HomePage_warm_date_font(void)
+{
+    static const char date_markers[] = "\346\234\210\346\227\245";
+
+    if (s_home_heiti_16 == NULL)
+    {
+        s_home_heiti_16 = ui_heiti_font_get_16();
+    }
+    return ui_heiti_font_warm_text(16U, date_markers) ? 1U : 0U;
+}
+
 static void ui_HomePage_draw_date_text(egui_canvas_t *canvas,
                                        const egui_font_t *number_font,
                                        const egui_font_t *heiti_font,
@@ -1959,6 +1982,16 @@ static void ui_HomePage_draw_date_text(egui_canvas_t *canvas,
     month_text[month_len] = '\0';
     memcpy(day_text, month_pos + sizeof(month_marker) - 1U, day_len);
     day_text[day_len] = '\0';
+
+    if (s_home_heiti_16_ready == 0U)
+    {
+        char ascii_date[6];
+
+        (void)snprintf(ascii_date, sizeof(ascii_date), "%s/%s",
+                       month_text, day_text);
+        ui_HomePage_draw_raw_text(canvas, number_font, ascii_date, x, y, rgb);
+        return;
+    }
 
     pen_x += ui_HomePage_draw_text_advance(canvas, number_font, month_text, pen_x, y, rgb);
     pen_x += ui_HomePage_draw_text_advance(canvas, heiti_font, month_marker, pen_x, y, rgb);

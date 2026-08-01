@@ -9,6 +9,7 @@ enum WeatherSyncRequest : uint32_t {
     WEATHER_SYNC_SETTINGS_CHANGED = BIT1,
     WEATHER_SYNC_START_AP = BIT2,
     WEATHER_SYNC_STOP_AP = BIT3,
+    WEATHER_SYNC_MANUAL_NOW = BIT4,
 };
 
 extern TaskHandle_t WeatherSyncTaskHandle;

@@ -15,6 +15,7 @@ constexpr EventBits_t HW_EVENT_SD_READY = BIT1;
 constexpr EventBits_t HW_EVENT_CODEC_READY = BIT2;
 constexpr EventBits_t HW_EVENT_LIBRARY_READY = BIT3;
 constexpr EventBits_t HW_EVENT_INIT_DONE = BIT4;
+constexpr EventBits_t HW_EVENT_LITTLEFS_READY = BIT5;
 
 extern QueueHandle_t KeyEventQueue;
 extern QueueHandle_t GuiKeyQueue;
@@ -29,6 +30,8 @@ extern EventGroupHandle_t HardwareEventGroup;
 void task_system_init();
 bool task_post_player_command(PlayerCommandType type, int16_t value = 0,
                               bool show_feedback = false);
+bool task_post_player_selection(uint16_t playlist_index,
+                                uint16_t playlist_track_index);
 bool task_post_player_audio_settings(const AudioSettings &settings, bool persist,
                                      bool restart_sleep_timer = false);
 void task_publish_player_status(const PlayerStatus &status);
