@@ -1636,55 +1636,6 @@ static ui_home_style_t ui_HomePage_get_style(WeatherScene_t scene, uint8_t is_da
         style.tint_rgb = 0x000000;
         style.tint_alpha = 0U;
 
-        switch (scene)
-        {
-        case WEATHER_SCENE_CLOUDY:
-            style.background_rgb = 0x8AA0AD;
-            style.background_top_rgb = 0x718894;
-            style.background_bottom_rgb = 0xA3B4BC;
-            style.top_text_rgb = HOME_TOP_TEXT_DARK_RGB;
-            style.tint_alpha = 28U;
-            break;
-        case WEATHER_SCENE_LIGHT_RAIN:
-            style.background_rgb = 0x6F8FA3;
-            style.background_top_rgb = 0x536F82;
-            style.background_bottom_rgb = 0x8BAFC4;
-            style.top_text_rgb = HOME_TOP_TEXT_LIGHT_RGB;
-            style.ground_text_rgb = HOME_GROUND_TEXT_NIGHT_RGB;
-            style.tint_rgb = 0x183244;
-            style.tint_alpha = 42U;
-            break;
-        case WEATHER_SCENE_MODERATE_RAIN:
-            style.background_rgb = 0x536F82;
-            style.background_top_rgb = 0x3D5565;
-            style.background_bottom_rgb = 0x69899F;
-            style.top_text_rgb = HOME_TOP_TEXT_LIGHT_RGB;
-            style.ground_text_rgb = HOME_GROUND_TEXT_NIGHT_RGB;
-            style.tint_rgb = 0x102536;
-            style.tint_alpha = 58U;
-            break;
-        case WEATHER_SCENE_HEAVY_RAIN:
-            style.background_rgb = 0x364B5C;
-            style.background_top_rgb = 0x273844;
-            style.background_bottom_rgb = 0x456272;
-            style.top_text_rgb = HOME_TOP_TEXT_LIGHT_RGB;
-            style.ground_text_rgb = HOME_GROUND_TEXT_NIGHT_RGB;
-            style.tint_rgb = 0x081724;
-            style.tint_alpha = 78U;
-            break;
-        case WEATHER_SCENE_SNOW:
-            style.background_rgb = 0xB7D0DA;
-            style.background_top_rgb = 0x9EBBC8;
-            style.background_bottom_rgb = 0xD0E5EC;
-            style.top_text_rgb = HOME_TOP_TEXT_DARK_RGB;
-            style.tint_rgb = 0xEAF7FF;
-            style.tint_alpha = 30U;
-            break;
-        case WEATHER_SCENE_CLEAR:
-        case WEATHER_SCENE_UNKNOWN:
-        default:
-            break;
-        }
     }
     else
     {
@@ -1696,6 +1647,9 @@ static ui_home_style_t ui_HomePage_get_style(WeatherScene_t scene, uint8_t is_da
         style.tint_rgb = 0xFFFFFF;
         style.tint_alpha = 0U;
     }
+
+    // Weather changes icons and particles, never the monochrome background.
+    EGUI_UNUSED(scene);
 
     return style;
 }

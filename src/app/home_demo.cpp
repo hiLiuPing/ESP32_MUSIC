@@ -260,7 +260,6 @@ void home_demo_init(uint32_t now_ms) {
     (void)now_ms;
 #endif
 }
-
 void home_demo_service(uint32_t now_ms) {
 #if HOME_DEMO_ENABLE
     service_serial(now_ms);
@@ -273,4 +272,3 @@ void home_demo_service(uint32_t now_ms) {
     (void)now_ms;
 #endif
 }
-

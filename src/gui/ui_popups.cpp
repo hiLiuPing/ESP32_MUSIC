@@ -20,7 +20,7 @@ constexpr uint32_t SYSTEM_ANIMATION_MS = 250U;
 constexpr uint32_t SYSTEM_HOLD_MS = 4500U;
 constexpr uint32_t MUSIC_HOLD_MS = 1500U;
 constexpr const char *MUSIC_GLYPHS =
-    "音乐控制播放暂停上一曲下一曲音量加减没有可歌曲失败操作";
+    "音乐控制播放暂停上一曲下一曲音量加减没有可歌曲失败操作已跳过无法的文件";
 
 egui_background_color_param_t poetry_panel_background_param;
 egui_background_params_t poetry_panel_background_params;

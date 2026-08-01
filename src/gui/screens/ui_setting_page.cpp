@@ -145,9 +145,6 @@ bool key_consume(const KeyEvent &event) {
         if (event.id == KeyId::Middle && event.gesture == KeyGesture::Click) {
             const bool changed = settings_app_update(settings);
             if (changed) (void)weather_sync_request(WEATHER_SYNC_SETTINGS_CHANGED);
-            if (selected == 3U) {
-                (void)weather_sync_request(weather_sync_is_provisioning() ? WEATHER_SYNC_STOP_AP : WEATHER_SYNC_START_AP);
-            }
             editing = false;
             Serial.printf("[SETTING] save item=%u\n", selected);
             return true;
@@ -155,6 +152,14 @@ bool key_consume(const KeyEvent &event) {
         return true;
     }
     if (event.id == KeyId::Middle && event.gesture == KeyGesture::Click) {
+        if (selected == 3U) {
+            const bool request_stop = weather_sync_is_provisioning();
+            (void)weather_sync_request(request_stop ? WEATHER_SYNC_STOP_AP
+                                                     : WEATHER_SYNC_START_AP);
+            Serial.printf("[SETTING] wifi config %s\n",
+                          request_stop ? "stop" : "start");
+            return true;
+        }
         editing = true;
         Serial.printf("[SETTING] enter item=%u\n", selected);
         return true;

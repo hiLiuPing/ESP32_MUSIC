@@ -323,13 +323,15 @@ void app_data_set_home_demo(const AppTime &time, const HomeWeatherData &weather,
     if (count > APP_WEATHER_FORECAST_DAYS) count = APP_WEATHER_FORECAST_DAYS;
     if (!lock_snapshot(portMAX_DELAY)) return;
 
+    const uint32_t next_time_version = injected_time.version + 1U;
+    const uint32_t next_weather_version = injected_weather.version + 1U;
+    const uint32_t next_forecast_version = injected_forecast_version + 1U;
     injected_time = time;
-    injected_time.version++;
+    injected_time.version = next_time_version;
     time_stale_override = false;
     external_time_source = true;
     injected_weather = weather;
-    injected_weather.version++;
-    const uint32_t next_forecast_version = injected_forecast_version + 1U;
+    injected_weather.version = next_weather_version;
     for (uint8_t i = 0U; i < count; ++i) {
         injected_forecast[i] = forecast[i];
         injected_forecast[i].version = next_forecast_version;

@@ -243,6 +243,15 @@ void Audio::setBufsize(int rambuf_sz, int psrambuf_sz) {
     InBuff.setBufsize(rambuf_sz, psrambuf_sz);
 };
 
+bool Audio::initInputBuffer() {
+    initInBuff();
+    return InBuff.isInitialized();
+}
+
+bool Audio::inputBufferUsesPSRAM() {
+    return InBuff.isInitialized() && InBuff.havePSRAM();
+}
+
 void Audio::initInBuff() {
     if(!InBuff.isInitialized()) {
         size_t size = InBuff.init();
@@ -749,7 +758,14 @@ bool Audio::connecttoFS(fs::FS &fs, const char* path, uint32_t resumeFilePos) {
 
     if(afn) {free(afn); afn = NULL;}
 
+    constexpr uint32_t psramCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    AUDIO_INFO("PSRAM before decoder init, free: %u, largest: %u",
+               heap_caps_get_free_size(psramCaps),
+               heap_caps_get_largest_free_block(psramCaps));
     bool ret = initializeDecoder();
+    AUDIO_INFO("PSRAM after decoder init, free: %u, largest: %u",
+               heap_caps_get_free_size(psramCaps),
+               heap_caps_get_largest_free_block(psramCaps));
     if(ret) m_f_running = true;
     else audiofile.close();
     xSemaphoreGive(mutex_audio);
@@ -5316,4 +5332,3 @@ uint8_t Audio::determineOggCodec(uint8_t* data, uint16_t len){
     return CODEC_NONE;
 }
 //----------------------------------------------------------------------------------------------------------------------
-

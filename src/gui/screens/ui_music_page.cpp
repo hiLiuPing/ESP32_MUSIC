@@ -246,7 +246,7 @@ void draw_control(egui_canvas_t *canvas, uint8_t index) {
 
 const char *empty_state_message() {
     if (player_status.state == PlayerState::NoSd) return "SD CARD NOT FOUND";
-    if (player_status.state == PlayerState::Empty) return "NO MP3 IN /music";
+    if (player_status.state == PlayerState::Empty) return "NO AUDIO IN /music";
     if (player_status.error != PlayerError::None) return "PLAYER ERROR";
     return nullptr;
 }
@@ -737,6 +737,13 @@ bool key_consume(const KeyEvent &event) {
                 audio_draft, true, audio_selected == AUDIO_ITEM_SLEEP_TIMER);
             audio_saved = audio_draft;
             audio_editing = false;
+        } else if (audio_selected == 1U) {
+            audio_draft.amplifier_enabled = !audio_draft.amplifier_enabled;
+            (void)task_post_player_audio_settings(audio_draft, true, false);
+            audio_saved = audio_draft;
+            audio_editing = false;
+            Serial.printf("[MUSIC] speaker=%s\n",
+                          audio_draft.amplifier_enabled ? "ON" : "OFF");
         } else {
             audio_editing = true;
         }

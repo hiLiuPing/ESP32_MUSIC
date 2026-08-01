@@ -2,10 +2,12 @@
 
 #include <Audio.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <dsps_fft2r.h>
+#include <esp_heap_caps.h>
 #include <esp_system.h>
 
 #include "app/music_library.h"
@@ -31,6 +33,9 @@ bool sd_ready = false;
 bool codec_ready = false;
 bool i2s_ready = false;
 bool track_started = false;
+bool audio_input_uses_psram = false;
+bool last_start_skipped = false;
+bool skip_feedback_posted_in_pass = false;
 uint32_t last_sleep_timer_ms = 0U;
 TickType_t last_status_tick = 0;
 TickType_t last_spectrum_tick = 0;
@@ -46,9 +51,46 @@ bool spectrum_ready = false;
 uint16_t shuffle_order[PLAYER_MAX_TRACKS] = {};
 uint16_t shuffle_count = 0;
 uint16_t shuffle_cursor = 0;
+uint8_t attempted_tracks[(PLAYER_MAX_TRACKS + 7U) / 8U] = {};
 
 void publish(bool force = false);
 void clear_spectrum();
+
+void log_psram_usage(const char *phase) {
+    constexpr uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    Serial.printf("[PSRAM] %s free=%u largest=%u\n",
+                  phase == nullptr ? "unknown" : phase,
+                  static_cast<unsigned>(heap_caps_get_free_size(caps)),
+                  static_cast<unsigned>(heap_caps_get_largest_free_block(caps)));
+}
+
+bool ends_with_ignore_case(const char *path, const char *extension) {
+    if (path == nullptr || extension == nullptr) return false;
+    const size_t path_length = std::strlen(path);
+    const size_t extension_length = std::strlen(extension);
+    if (path_length < extension_length) return false;
+    const char *suffix = path + path_length - extension_length;
+    for (size_t index = 0U; index < extension_length; ++index) {
+        if (std::tolower(static_cast<unsigned char>(suffix[index])) !=
+            std::tolower(static_cast<unsigned char>(extension[index]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void reset_track_attempts() {
+    std::memset(attempted_tracks, 0, sizeof(attempted_tracks));
+    skip_feedback_posted_in_pass = false;
+}
+
+bool track_was_attempted(uint16_t index) {
+    return (attempted_tracks[index / 8U] & (1U << (index % 8U))) != 0U;
+}
+
+void mark_track_attempted(uint16_t index) {
+    attempted_tracks[index / 8U] |= static_cast<uint8_t>(1U << (index % 8U));
+}
 
 void post_music_feedback(bool enabled, const char *text) {
     if (enabled && text != nullptr) {
@@ -295,7 +337,7 @@ void select_track(uint16_t index) {
     status.duration_seconds = 0;
 }
 
-bool start_track(uint16_t index) {
+bool start_track_once(uint16_t index) {
     char path[PLAYER_PATH_LENGTH] = {};
     char name[PLAYER_NAME_LENGTH] = {};
     if (!sd_ready) {
@@ -323,26 +365,82 @@ bool start_track(uint16_t index) {
     audio.stopSong();
     eof_received = false;
     clear_spectrum();
+    status.track_index = index;
+    std::snprintf(status.file_name, sizeof(status.file_name), "%s", name);
+    if (ends_with_ignore_case(path, ".flac") && !audio_input_uses_psram) {
+        track_started = false;
+        status.state = PlayerState::Error;
+        status.error = PlayerError::OpenFailed;
+        Serial.printf("[PLAYER] skipped FLAC without PSRAM input buffer: %s\n", path);
+        return false;
+    }
+
     if (!audio.connecttoFS(bsp_storage_fs(), path)) {
         track_started = false;
         status.state = PlayerState::Error;
         status.error = PlayerError::OpenFailed;
-        std::snprintf(status.file_name, sizeof(status.file_name), "%s", name);
         Serial.printf("[PLAYER] failed to open %s\n", path);
-        publish(true);
         return false;
     }
 
     track_started = true;
-    status.track_index = index;
     status.elapsed_seconds = 0;
     status.duration_seconds = 0;
     status.state = PlayerState::Playing;
     status.error = PlayerError::None;
-    std::snprintf(status.file_name, sizeof(status.file_name), "%s", name);
     Serial.printf("[PLAYER] playing %s\n", path);
     publish(true);
     return true;
+}
+
+void set_no_playable_tracks() {
+    audio.stopSong();
+    eof_received = false;
+    track_started = false;
+    status.elapsed_seconds = 0U;
+    status.duration_seconds = 0U;
+    status.state = PlayerState::Error;
+    status.error = PlayerError::NoPlayableTracks;
+    clear_spectrum();
+    Serial.println("[PLAYER] no playable tracks after one library pass");
+    post_music_feedback(true, "没有可播放歌曲");
+    publish(true);
+}
+
+bool start_track_with_fallback(uint16_t index, int direction = 1,
+                               bool reset_attempts = true) {
+    last_start_skipped = false;
+    if (status.track_count == 0U) return false;
+    if (reset_attempts) reset_track_attempts();
+
+    const int step = direction < 0 ? -1 : 1;
+    uint16_t candidate = index;
+    bool skipped = !reset_attempts;
+    for (uint16_t checked = 0U; checked < status.track_count; ++checked) {
+        if (track_was_attempted(candidate)) {
+            const int count = status.track_count;
+            candidate = static_cast<uint16_t>((candidate + count + step) % count);
+            continue;
+        }
+        mark_track_attempted(candidate);
+        if (start_track_once(candidate)) {
+            if (skipped) {
+                last_start_skipped = true;
+                if (!skip_feedback_posted_in_pass) {
+                    skip_feedback_posted_in_pass = true;
+                    post_music_feedback(true, "已跳过无法播放的文件");
+                }
+            }
+            return true;
+        }
+        if (status.error != PlayerError::OpenFailed) return false;
+        skipped = true;
+        const int count = status.track_count;
+        candidate = static_cast<uint16_t>((candidate + count + step) % count);
+    }
+
+    set_no_playable_tracks();
+    return false;
 }
 
 void rescan_library() {
@@ -353,6 +451,7 @@ void rescan_library() {
     status.duration_seconds = 0;
     status.sleep_timer_remaining_seconds = 0U;
     status.error = PlayerError::None;
+    reset_track_attempts();
     clear_spectrum();
 
     xEventGroupClearBits(HardwareEventGroup, HW_EVENT_LIBRARY_READY);
@@ -370,6 +469,7 @@ void rescan_library() {
     }
 
     music_library_scan(bsp_storage_fs());
+    log_psram_usage("after library scan");
     status.track_count = static_cast<uint16_t>(music_library_count());
     if (status.track_count == 0) {
         status.track_index = 0;
@@ -414,11 +514,15 @@ bool move_shuffle(int direction, uint16_t *index) {
     return true;
 }
 
-bool move_track(int direction, bool play, bool automatic = false) {
+bool move_track(int direction, bool play, bool automatic = false,
+                bool current_failed = false) {
     if (status.track_count == 0) return false;
 
     uint16_t index = status.track_index;
-    if (automatic && status.playback_mode == PlaybackMode::RepeatOne) {
+    if (current_failed) {
+        const int count = status.track_count;
+        index = static_cast<uint16_t>((status.track_index + count + direction) % count);
+    } else if (automatic && status.playback_mode == PlaybackMode::RepeatOne) {
         index = status.track_index;
     } else if (status.playback_mode == PlaybackMode::Shuffle) {
         if (!move_shuffle(direction, &index)) {
@@ -429,19 +533,23 @@ bool move_track(int direction, bool play, bool automatic = false) {
         index = static_cast<uint16_t>((status.track_index + count + direction) % count);
     }
 
-    if (play || track_started) return start_track(index);
+    if (play || track_started) {
+        return start_track_with_fallback(index, direction, !current_failed);
+    }
     select_track(index);
     publish(true);
     return true;
 }
 
 void handle_command(const PlayerCommand &command) {
+    last_start_skipped = false;
     switch (command.type) {
         case PlayerCommandType::PlaySelected:
             if ((command.value >= 0) && (command.value < status.track_count)) {
                 const uint16_t index = static_cast<uint16_t>(command.value);
-                if (start_track(index) && status.playback_mode == PlaybackMode::Shuffle) {
-                    build_shuffle(index);
+                if (start_track_with_fallback(index) &&
+                    status.playback_mode == PlaybackMode::Shuffle) {
+                    build_shuffle(status.track_index);
                 }
             } else {
                 status.state = PlayerState::Error;
@@ -462,10 +570,10 @@ void handle_command(const PlayerCommand &command) {
                     succeeded = true;
                 }
             } else if (status.track_count > 0) {
-                succeeded = start_track(status.track_index);
+                succeeded = start_track_with_fallback(status.track_index);
             }
             if (command.show_feedback) {
-                if (succeeded) {
+                if (succeeded && !last_start_skipped) {
                     post_music_feedback(true, status.state == PlayerState::Paused
                                                   ? "暂停" : "播放");
                 } else if (status.track_count == 0) {
@@ -487,10 +595,10 @@ void handle_command(const PlayerCommand &command) {
                     succeeded = true;
                 }
             } else if (status.track_count > 0) {
-                succeeded = start_track(status.track_index);
+                succeeded = start_track_with_fallback(status.track_index);
             }
             if (command.show_feedback) {
-                if (succeeded) post_music_feedback(true, "播放");
+                if (succeeded && !last_start_skipped) post_music_feedback(true, "播放");
                 else if (status.track_count == 0) post_music_feedback(true, "没有可播放歌曲");
                 else if (status.error == PlayerError::None) post_music_feedback(true, "播放失败");
             }
@@ -514,7 +622,7 @@ void handle_command(const PlayerCommand &command) {
         {
             const bool succeeded = move_track(-1, true);
             if (command.show_feedback) {
-                if (succeeded) post_music_feedback(true, "上一曲");
+                if (succeeded && !last_start_skipped) post_music_feedback(true, "上一曲");
                 else if (status.track_count == 0) post_music_feedback(true, "没有可播放歌曲");
                 else if (status.error == PlayerError::None) post_music_feedback(true, "上一曲失败");
             }
@@ -524,7 +632,7 @@ void handle_command(const PlayerCommand &command) {
         {
             const bool succeeded = move_track(1, true);
             if (command.show_feedback) {
-                if (succeeded) post_music_feedback(true, "下一曲");
+                if (succeeded && !last_start_skipped) post_music_feedback(true, "下一曲");
                 else if (status.track_count == 0) post_music_feedback(true, "没有可播放歌曲");
                 else if (status.error == PlayerError::None) post_music_feedback(true, "下一曲失败");
             }
@@ -582,6 +690,16 @@ void audio_info(const char *info) {
 
 void player_task(void *parameter) {
     (void)parameter;
+    audio.setBufsize(-1, AUDIO_PSRAM_BUFFER_BYTES);
+    log_psram_usage("before audio input buffer");
+    const bool audio_input_ready = audio.initInputBuffer();
+    audio_input_uses_psram = audio.inputBufferUsesPSRAM();
+    Serial.printf("[PLAYER] audio input buffer request=%d bytes ready=%s memory=%s\n",
+                  AUDIO_PSRAM_BUFFER_BYTES,
+                  audio_input_ready ? "yes" : "no",
+                  audio_input_uses_psram ? "PSRAM" : "internal");
+    log_psram_usage("after audio input buffer");
+
     audio_settings_init();
     const AudioSettings saved_audio_settings = audio_settings_get();
     std::memset(&status, 0, sizeof(status));
@@ -602,9 +720,6 @@ void player_task(void *parameter) {
     const EventBits_t bits = xEventGroupGetBits(HardwareEventGroup);
     sd_ready = (bits & HW_EVENT_SD_READY) != 0;
     codec_ready = (bits & HW_EVENT_CODEC_READY) != 0;
-    audio.setBufsize(-1, AUDIO_PSRAM_BUFFER_BYTES);
-    Serial.printf("[PLAYER] audio input buffer request=%d bytes (PSRAM preferred)\n",
-                  AUDIO_PSRAM_BUFFER_BYTES);
     if (codec_ready) {
         i2s_ready = bsp_audio_configure_i2s(audio,
                                             saved_audio_settings.amplifier_enabled);
@@ -632,10 +747,11 @@ void player_task(void *parameter) {
                 move_track(1, true, true);
             } else if (track_started && !audio.isRunning()) {
                 track_started = false;
-                status.state = PlayerState::Error;
                 status.error = PlayerError::DecodeStopped;
                 clear_spectrum();
-                publish(true);
+                Serial.printf("[PLAYER] decode stopped for track %u, trying next\n",
+                              static_cast<unsigned>(status.track_index));
+                move_track(1, true, true, true);
             }
         }
         if (status.state == PlayerState::Playing) {

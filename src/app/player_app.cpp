@@ -51,6 +51,7 @@ const char *player_error_name(PlayerError error) {
         case PlayerError::TrackOutOfRange: return "track-out-of-range";
         case PlayerError::OpenFailed: return "open-failed";
         case PlayerError::DecodeStopped: return "decode-stopped";
+        case PlayerError::NoPlayableTracks: return "no-playable-tracks";
         case PlayerError::QueueFull: return "queue-full";
     }
     return "unknown";

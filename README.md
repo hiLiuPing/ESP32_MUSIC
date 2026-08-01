@@ -1,17 +1,25 @@
 # ESP32-S3 Music Player
 
-FreeRTOS-based local MP3 player for an ESP32-S3, ST7305 384x168 display and
+FreeRTOS-based local audio player for an ESP32-S3, ST7305 384x168 display and
 WM8978 codec. The firmware is split into four layers:
 
 - `src/bsp`: pins and hardware drivers for display, SD, codec and input.
-- `src/app`: command parser, MP3 library and shared player state.
+- `src/app`: command parser, music library and shared player state.
 - `src/task`: FreeRTOS object creation and hardware/input/player/GUI tasks.
 - `src/gui`: boot, home, music, weather, poetry and setting pages.
 
-The player does not start playback at boot. It recursively indexes up to 1000 MP3
-files below `/music` into a PSRAM-backed path cache and waits on the first track. Weather/time
+The player does not start playback at boot. It recursively indexes up to 1000 MP3,
+AAC, M4A, WAV and FLAC files below `/music` into a PSRAM-backed path cache and
+waits on the first track. Weather/time
 synchronization is disabled by default; when enabled in Setting, the firmware
 uses the saved Wi-Fi profile to query NTP and QWeather on the configured interval.
+
+M4A files must contain AAC audio; ALAC is not supported. WAV files must be PCM,
+8- or 16-bit, mono or stereo. FLAC files must be 8- or 16-bit, mono or stereo,
+use a block size no larger than 8192, and require the 512 KiB audio input buffer
+to be allocated in PSRAM. Opus, Ogg, WMA, APE and ALAC files are not indexed.
+Unreadable or incompatible files are skipped automatically, with at most one
+full library pass per playback request.
 
 When no Wi-Fi profile exists, or when `WIFI CONFIG` is started from Setting, the
 device creates the `DuduClock` access point at `192.168.1.1`. Submit the Wi-Fi,
@@ -47,10 +55,10 @@ home-demo status
 home-demo 1..27
 ```
 
-`HOME_DEMO_ENABLE` in `include/app/home_demo.h` is enabled by default for Home
-scene testing. It cycles through the 27 time/weather scenes every two seconds.
-Manual scene selection pauses the cycle; `home-demo auto` resumes it. Set the
-macro to `0` for normal RTC and network weather operation.
+`HOME_DEMO_ENABLE` in `platformio.ini` controls Home scene testing. With the
+build flag set to `1`, it cycles through the 27 time/weather scenes every two
+seconds. Manual scene selection pauses the cycle; `home-demo auto` resumes it.
+Set the build flag to `0` for normal RTC and network weather operation.
 
 Physical keys use two navigation levels. After switching pages with left and
 right, click the middle key to enter that page's controls. While inside a page,

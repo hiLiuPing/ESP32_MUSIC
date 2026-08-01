@@ -13,14 +13,14 @@ namespace {
 constexpr int16_t SCREEN_W = EGUI_CONFIG_SCREEN_WIDTH;
 constexpr uint8_t DAY_COUNT = APP_WEATHER_FORECAST_DAYS;
 
-constexpr int16_t DATE_Y = 26;
-constexpr int16_t WEEKDAY_Y = 40;
-constexpr int16_t ICON_Y = 52;
+constexpr int16_t DATE_Y = 1;
+constexpr int16_t WEEKDAY_Y = 18;
+constexpr int16_t ICON_Y = 32;
 constexpr int16_t ICON_SIZE = 27;
-constexpr int16_t HIGH_TRACK_TOP = 91;
-constexpr int16_t HIGH_TRACK_BOTTOM = 104;
-constexpr int16_t LOW_TRACK_TOP = 123;
-constexpr int16_t LOW_TRACK_BOTTOM = 136;
+constexpr int16_t HIGH_TRACK_TOP = 74;
+constexpr int16_t HIGH_TRACK_BOTTOM = 86;
+constexpr int16_t LOW_TRACK_TOP = 106;
+constexpr int16_t LOW_TRACK_BOTTOM = 120;
 
 GuiEguiView view;
 WeatherForecastDay days[DAY_COUNT] = {};
@@ -133,10 +133,6 @@ static void copy_forecast() {
 
 static void draw(egui_canvas_t *canvas) {
     gui_draw_page_background(canvas);
-    gui_draw_header(canvas, "WEATHER");
-    draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_10_4),
-              complete_forecast ? "7 DAY FORECAST" : "WEATHER DATA UNAVAILABLE",
-              0, 22, SCREEN_W, 16, EGUI_ALIGN_CENTER, 0x475569);
 
     int high_min = 0;
     int high_max = 0;
@@ -162,7 +158,7 @@ static void draw(egui_canvas_t *canvas) {
         const int16_t width = column_width(i);
         const bool active = navigation_active && selected == i;
         const uint32_t primary = active ? 0xFFFFFFU : 0x111827U;
-        if (active) egui_canvas_draw_rectangle_fill(canvas, left + 1, 47, width - 2, 107,
+        if (active) egui_canvas_draw_rectangle_fill(canvas, left + 1, 0, width - 2, 160,
                                                     EGUI_COLOR_BLACK, EGUI_ALPHA_100);
 
         char date[12] = "--/--";
@@ -192,11 +188,6 @@ static void draw(egui_canvas_t *canvas) {
                                          HIGH_TRACK_TOP, HIGH_TRACK_BOTTOM);
             low_y[i] = map_temperature(days[i].low_c, low_min, low_max,
                                         LOW_TRACK_TOP, LOW_TRACK_BOTTOM);
-            char temperature[16] = {};
-            std::snprintf(temperature, sizeof(temperature), "%d/%dC",
-                          static_cast<int>(days[i].high_c), static_cast<int>(days[i].low_c));
-            draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_10_4), temperature,
-                      left, 143, width, 14, EGUI_ALIGN_CENTER, primary);
         } else {
             draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_10_4), "--/--C",
                       left, 143, width, 14, EGUI_ALIGN_CENTER, 0x94A3B8);
@@ -213,6 +204,28 @@ static void draw(egui_canvas_t *canvas) {
             egui_canvas_draw_line(canvas, column_center(i), low_y[i],
                                   column_center(i + 1U), low_y[i + 1U], 2,
                                   weather_color(0x38BDF8), EGUI_ALPHA_100);
+        }
+        for (uint8_t i = 0U; i < DAY_COUNT; ++i) {
+            egui_canvas_draw_circle_fill(canvas, column_center(i), high_y[i], 2,
+                                         weather_color(0xF97316), EGUI_ALPHA_100);
+            egui_canvas_draw_circle_fill(canvas, column_center(i), low_y[i], 2,
+                                         weather_color(0x38BDF8), EGUI_ALPHA_100);
+        }
+        for (uint8_t i = 0U; i < DAY_COUNT; ++i) {
+            const int16_t left = column_left(i);
+            const int16_t width = column_width(i);
+            char high_text[16] = {};
+            char low_text[16] = {};
+            std::snprintf(high_text, sizeof(high_text), "%s%dC",
+                          days[i].stale ? "*" : "", static_cast<int>(days[i].high_c));
+            std::snprintf(low_text, sizeof(low_text), "%s%dC",
+                          days[i].stale ? "*" : "", static_cast<int>(days[i].low_c));
+            draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_10_4), high_text,
+                      left, high_y[i] - 14, width, 14, EGUI_ALIGN_CENTER,
+                      navigation_active && selected == i ? 0xFFFFFF : 0xF97316);
+            draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_10_4), low_text,
+                      left, low_y[i] + 2, width, 14, EGUI_ALIGN_CENTER,
+                      navigation_active && selected == i ? 0xFFFFFF : 0x38BDF8);
         }
         if (rendered_version != forecast_version) {
             rendered_version = forecast_version;

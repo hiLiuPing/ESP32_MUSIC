@@ -113,15 +113,29 @@ bool append_path(TrackCache &cache, const char *path) {
     return true;
 }
 
-bool is_mp3_path(const char *path) {
-    if (path == nullptr) return false;
-    const size_t length = std::strlen(path);
-    if (length < 4U) return false;
-    const char *extension = path + length - 4U;
-    return extension[0] == '.' &&
-           std::tolower(static_cast<unsigned char>(extension[1])) == 'm' &&
-           std::tolower(static_cast<unsigned char>(extension[2])) == 'p' &&
-           extension[3] == '3';
+bool ends_with_ignore_case(const char *path, const char *extension) {
+    if (path == nullptr || extension == nullptr) return false;
+    const size_t path_length = std::strlen(path);
+    const size_t extension_length = std::strlen(extension);
+    if (path_length < extension_length) return false;
+    const char *suffix = path + path_length - extension_length;
+    for (size_t index = 0U; index < extension_length; ++index) {
+        if (std::tolower(static_cast<unsigned char>(suffix[index])) !=
+            std::tolower(static_cast<unsigned char>(extension[index]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool is_supported_audio_path(const char *path) {
+    constexpr const char *SUPPORTED_EXTENSIONS[] = {
+        ".mp3", ".aac", ".m4a", ".wav", ".flac",
+    };
+    for (const char *extension : SUPPORTED_EXTENSIONS) {
+        if (ends_with_ignore_case(path, extension)) return true;
+    }
+    return false;
 }
 
 void scan_directory(fs::FS &filesystem, const char *directory_path,
@@ -140,7 +154,7 @@ void scan_directory(fs::FS &filesystem, const char *directory_path,
                 scan_directory(filesystem, entry_path,
                                static_cast<uint8_t>(depth + 1U), cache);
             }
-        } else if (is_mp3_path(entry_path)) {
+        } else if (is_supported_audio_path(entry_path)) {
             (void)append_path(cache, entry_path);
         }
         entry.close();

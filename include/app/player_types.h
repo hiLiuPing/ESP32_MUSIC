@@ -48,6 +48,7 @@ enum class PlayerError : uint8_t {
     TrackOutOfRange,
     OpenFailed,
     DecodeStopped,
+    NoPlayableTracks,
     QueueFull,
 };
 
