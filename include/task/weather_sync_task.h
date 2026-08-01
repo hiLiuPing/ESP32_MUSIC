@@ -17,3 +17,4 @@ extern TaskHandle_t WeatherSyncTaskHandle;
 void weather_sync_task(void *parameter);
 bool weather_sync_request(uint32_t request);
 bool weather_sync_is_provisioning();
+bool weather_sync_is_busy();

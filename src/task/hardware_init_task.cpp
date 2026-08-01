@@ -9,6 +9,10 @@
 #include "task/task_system.h"
 #include "app/system_notify.h"
 
+#ifndef PROJECT_DEBUG_MODE
+#define PROJECT_DEBUG_MODE 0
+#endif
+
 namespace {
 constexpr uint32_t EXPECTED_PSRAM_BYTES = 2U * 1024U * 1024U;
 
@@ -65,20 +69,20 @@ void hardware_init_task(void *parameter) {
         system_notify_post(SystemNotifyType::Storage, "SD CARD UNAVAILABLE");
     }
 
-    bool littlefs_resources_ready = littlefs_ready;
+#if PROJECT_DEBUG_MODE
     if (littlefs_ready && sd_ready) {
         Serial.println("[HW] LittleFS resource sync");
         if (bsp_littlefs_sync_from(bsp_storage_fs(), "/data")) {
             Serial.println("[HW] LittleFS resource sync complete");
         } else {
             Serial.println("[HW] LittleFS resource sync failed");
-            littlefs_resources_ready = false;
             system_notify_post(SystemNotifyType::Storage, "RESOURCE SYNC FAILED");
         }
     } else {
         Serial.println("[HW] LittleFS resource sync skipped");
     }
-    if (littlefs_resources_ready) {
+#endif
+    if (littlefs_ready) {
         xEventGroupSetBits(HardwareEventGroup, HW_EVENT_LITTLEFS_READY);
         if (GuiWakeSemaphore != nullptr) {
             xSemaphoreGive(GuiWakeSemaphore);

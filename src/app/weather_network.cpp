@@ -194,6 +194,8 @@ void ensure_initialized() {
     if (initialized) return;
     prefs.begin(PREF_NAMESPACE, false);
     load_cache();
+    WiFi.persistent(false);
+    WiFi.setSleep(false);
     initialized = true;
 }
 }
@@ -224,7 +226,17 @@ bool weather_network_connect(uint32_t timeout_ms) {
     for (uint8_t i = 0U; i < count; ++i) {
         const int slot = order[i];
         WiFi.mode(WIFI_STA);
-        WiFi.disconnect(true, true);
+        WiFi.setSleep(false);
+        if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == profiles[slot].ssid) {
+            active_slot = static_cast<int8_t>(slot);
+            profiles[slot].order = ++order_sequence;
+            save_profile_to_prefs(profiles[slot]);
+            persist_metadata();
+            Serial.printf("[WEATHER] WiFi already connected: %s\n",
+                          profiles[slot].ssid.c_str());
+            return true;
+        }
+        WiFi.disconnect(false, false);
         WiFi.begin(profiles[slot].ssid.c_str(), profiles[slot].pass.c_str());
         const uint32_t start = millis();
         while (WiFi.status() != WL_CONNECTED && millis() - start < timeout_ms) {
@@ -243,8 +255,8 @@ bool weather_network_connect(uint32_t timeout_ms) {
 }
 
 void weather_network_disconnect() {
-    if (WiFi.status() == WL_CONNECTED) WiFi.disconnect(true, true);
-    WiFi.mode(WIFI_OFF);
+    if (WiFi.status() == WL_CONNECTED) WiFi.disconnect(false, false);
+    WiFi.mode(WIFI_STA);
 }
 
 void weather_network_update_active_location(const String &new_location, const String &new_lat,
@@ -286,6 +298,7 @@ bool weather_network_start_ap() {
     ensure_initialized();
     if (ap_active) return true;
     WiFi.mode(WIFI_AP_STA);
+    WiFi.setSleep(false);
     WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_NETMASK);
     if (!WiFi.softAP(AP_SSID)) return false;
     const int found = WiFi.scanNetworks(false, true);
@@ -316,7 +329,8 @@ void weather_network_stop_ap() {
     server.stop();
     dns_server.stop();
     WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_OFF);
+    WiFi.mode(weather_network_has_profiles() ? WIFI_STA : WIFI_OFF);
+    if (WiFi.getMode() != WIFI_OFF) WiFi.setSleep(false);
     ap_active = false;
 }
 

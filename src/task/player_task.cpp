@@ -21,6 +21,7 @@ constexpr size_t FFT_SIZE = 512;
 constexpr int AUDIO_PSRAM_BUFFER_BYTES = 512 * 1024;
 constexpr uint32_t SPECTRUM_INTERVAL_MS = 80;
 constexpr uint32_t STATUS_INTERVAL_MS = 100;
+constexpr uint32_t WEATHER_RECOVERY_GRACE_MS = 15000;
 constexpr float SPECTRUM_MIN_HZ = 80.0F;
 constexpr float SPECTRUM_MAX_HZ = 16000.0F;
 constexpr float SPECTRUM_MIN_DB = -72.0F;
@@ -36,6 +37,9 @@ bool track_started = false;
 bool audio_input_uses_psram = false;
 bool last_start_skipped = false;
 bool skip_feedback_posted_in_pass = false;
+bool weather_recovery_pending = false;
+uint32_t weather_recovery_started_ms = 0U;
+uint32_t weather_recovery_file_pos = 0U;
 uint32_t last_sleep_timer_ms = 0U;
 TickType_t last_status_tick = 0;
 TickType_t last_spectrum_tick = 0;
@@ -52,9 +56,16 @@ uint16_t shuffle_order[PLAYER_MAX_TRACKS] = {};
 uint16_t shuffle_count = 0;
 uint16_t shuffle_cursor = 0;
 uint8_t attempted_tracks[(PLAYER_MAX_TRACKS + 7U) / 8U] = {};
+char current_path[PLAYER_PATH_LENGTH] = {};
 
 void publish(bool force = false);
 void clear_spectrum();
+
+void clear_weather_recovery() {
+    weather_recovery_pending = false;
+    weather_recovery_started_ms = 0U;
+    weather_recovery_file_pos = 0U;
+}
 
 void log_psram_usage(const char *phase) {
     constexpr uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
@@ -423,10 +434,12 @@ bool start_track_once(uint16_t index) {
 
     audio.stopSong();
     eof_received = false;
+    clear_weather_recovery();
     clear_spectrum();
     status.track_index = global_index;
     status.playlist_track_index = index;
     std::snprintf(status.file_name, sizeof(status.file_name), "%s", name);
+    std::snprintf(current_path, sizeof(current_path), "%s", path);
     if (ends_with_ignore_case(path, ".flac") && !audio_input_uses_psram) {
         track_started = false;
         status.state = PlayerState::Error;
@@ -453,10 +466,34 @@ bool start_track_once(uint16_t index) {
     return true;
 }
 
+bool restart_current_track(uint32_t resume_file_pos) {
+    if (!sd_ready || !codec_ready || current_path[0] == '\0') return false;
+    audio.stopSong();
+    eof_received = false;
+    clear_spectrum();
+    if (!audio.connecttoFS(bsp_storage_fs(), current_path, resume_file_pos)) {
+        track_started = false;
+        status.state = PlayerState::Error;
+        status.error = PlayerError::OpenFailed;
+        Serial.printf("[PLAYER] weather recovery reopen failed pos=%lu path=%s\n",
+                      static_cast<unsigned long>(resume_file_pos), current_path);
+        publish(true);
+        return false;
+    }
+    track_started = true;
+    status.state = PlayerState::Playing;
+    status.error = PlayerError::None;
+    Serial.printf("[PLAYER] weather recovery resumed pos=%lu path=%s\n",
+                  static_cast<unsigned long>(resume_file_pos), current_path);
+    publish(true);
+    return true;
+}
+
 void set_no_playable_tracks() {
     audio.stopSong();
     eof_received = false;
     track_started = false;
+    clear_weather_recovery();
     status.elapsed_seconds = 0U;
     status.duration_seconds = 0U;
     status.state = PlayerState::Error;
@@ -503,10 +540,12 @@ bool start_track_with_fallback(uint16_t index, int direction = 1,
     return false;
 }
 
-void rescan_library() {
+void rescan_library(bool keep_stopped = false) {
     audio.stopSong();
     track_started = false;
     eof_received = false;
+    clear_weather_recovery();
+    current_path[0] = '\0';
     status.elapsed_seconds = 0;
     status.duration_seconds = 0;
     status.sleep_timer_remaining_seconds = 0U;
@@ -546,7 +585,8 @@ void rescan_library() {
         status.error = PlayerError::EmptyLibrary;
     } else {
         select_track(0);
-        status.state = codec_ready ? PlayerState::Ready : PlayerState::Error;
+        status.state = keep_stopped ? PlayerState::Stopped
+                                    : (codec_ready ? PlayerState::Ready : PlayerState::Error);
         status.error = codec_ready ? PlayerError::None : PlayerError::CodecUnavailable;
         xEventGroupSetBits(HardwareEventGroup, HW_EVENT_LIBRARY_READY);
     }
@@ -554,6 +594,22 @@ void rescan_library() {
     Serial.printf("[PLAYER] scan complete, %u track(s), %u playlist(s)\n",
                   status.track_count,
                   static_cast<unsigned>(music_library_playlist_count()));
+    publish(true);
+}
+
+void stop_for_storage() {
+    audio.stopSong();
+    eof_received = false;
+    track_started = false;
+    clear_weather_recovery();
+    current_path[0] = '\0';
+    status.elapsed_seconds = 0U;
+    status.duration_seconds = 0U;
+    status.sleep_timer_remaining_seconds = 0U;
+    status.state = status.track_count == 0U ? PlayerState::Empty : PlayerState::Stopped;
+    status.error = status.track_count == 0U ? PlayerError::EmptyLibrary : PlayerError::None;
+    clear_spectrum();
+    Serial.println("[PLAYER] stopped for storage access");
     publish(true);
 }
 
@@ -747,6 +803,8 @@ void handle_command(const PlayerCommand &command) {
                                  command.persist_audio_settings,
                                  command.restart_sleep_timer);
             break;
+        case PlayerCommandType::StopForStorage: stop_for_storage(); break;
+        case PlayerCommandType::RefreshLibraryStopped: rescan_library(true); break;
         case PlayerCommandType::Rescan: rescan_library(); break;
     }
 }
@@ -824,8 +882,33 @@ void player_task(void *parameter) {
             if (eof_received) {
                 eof_received = false;
                 track_started = false;
+                clear_weather_recovery();
                 move_track(1, true, true);
             } else if (track_started && !audio.isRunning()) {
+                const bool weather_busy = weather_sync_is_busy();
+                if (weather_busy || weather_recovery_pending) {
+                    const uint32_t now = millis();
+                    if (!weather_recovery_pending) {
+                        weather_recovery_pending = true;
+                        weather_recovery_started_ms = now;
+                        weather_recovery_file_pos = audio.getFilePos();
+                        clear_spectrum();
+                        Serial.printf("[PLAYER] decode paused during weather sync pos=%lu\n",
+                                      static_cast<unsigned long>(weather_recovery_file_pos));
+                        publish(true);
+                    }
+                    if (weather_busy &&
+                        static_cast<uint32_t>(now - weather_recovery_started_ms) <
+                        WEATHER_RECOVERY_GRACE_MS) {
+                        vTaskDelay(pdMS_TO_TICKS(20));
+                        continue;
+                    }
+                    const uint32_t resume_pos = weather_recovery_file_pos;
+                    clear_weather_recovery();
+                    if (resume_pos != 0U && restart_current_track(resume_pos)) {
+                        continue;
+                    }
+                }
                 track_started = false;
                 status.error = PlayerError::DecodeStopped;
                 clear_spectrum();
@@ -833,6 +916,7 @@ void player_task(void *parameter) {
                               static_cast<unsigned>(status.track_index));
                 move_track(1, true, true, true);
             }
+            if (audio.isRunning()) clear_weather_recovery();
         }
         if (status.state == PlayerState::Playing) {
             publish(false);

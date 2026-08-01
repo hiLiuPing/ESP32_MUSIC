@@ -6,6 +6,10 @@
 #include "bsp/board_config.h"
 #include "bsp/bsp_i2c.h"
 
+#ifndef PROJECT_DEBUG_MODE
+#define PROJECT_DEBUG_MODE 0
+#endif
+
 namespace {
 WM8978 codec;
 constexpr uint32_t AUDIO_POWER_OFF_MS = 100U;
@@ -93,9 +97,11 @@ bool bsp_audio_codec_init() {
         }
         wire_ready = bsp_i2c_begin();
         last_probe_result = 0xFFU;
+#if PROJECT_DEBUG_MODE
         if ((attempt == 1U) && wire_ready) {
             bsp_i2c_scan();
         }
+#endif
 
         Serial.printf("[AUDIO] WM8978 init attempt=%u/%u\n", attempt, CODEC_INIT_ATTEMPTS);
         if (wire_ready) {

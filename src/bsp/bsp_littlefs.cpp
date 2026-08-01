@@ -11,8 +11,8 @@
 
 
 
-#ifndef BSP_LITTLEFS_DEBUG_MODE
-#define BSP_LITTLEFS_DEBUG_MODE 0
+#ifndef PROJECT_DEBUG_MODE
+#define PROJECT_DEBUG_MODE 0
 #endif
 
 namespace {
@@ -29,7 +29,7 @@ bool init_littlefs() {
     }
 
     Serial.println("[LittleFS] initial mount failed");
-#if BSP_LITTLEFS_DEBUG_MODE
+#if PROJECT_DEBUG_MODE
     Serial.println("[LittleFS] debug recovery: formatting filesystem");
     if (!LittleFS.format()) {
         Serial.println("[LittleFS] debug recovery: format failed");
@@ -276,6 +276,7 @@ bool sync_directory(File &source_directory, const String &target_directory,
     return directory_ok;
 }
 
+#if PROJECT_DEBUG_MODE
 void print_tree(File dir, uint8_t depth) {
     while (true) {
         File entry = dir.openNextFile();
@@ -305,6 +306,7 @@ void print_resource_check(const char *path, uint32_t expected_size = 0U) {
     Serial.printf(" read=%u\n", static_cast<unsigned>(read_size));
     file.close();
 }
+#endif
 }
 
 bool bsp_littlefs_init() {
@@ -323,6 +325,7 @@ bool bsp_littlefs_init() {
     if (mount_ok) {
         const double size_mb = static_cast<double>(LittleFS.totalBytes()) / (1024.0 * 1024.0);
         Serial.printf("[LittleFS] size=%.2f MB\n", size_mb);
+#if PROJECT_DEBUG_MODE
         Serial.println("[LittleFS] mounted, file list:");
         File root = LittleFS.open("/");
         if (root) {
@@ -339,6 +342,7 @@ bool bsp_littlefs_init() {
         print_resource_check("/song_300.idx");
         print_resource_check("/tang_300.idx");
         print_resource_check("/quotes_china.idx");
+#endif
     }
     xSemaphoreGive(fs_mutex);
     mounted = mount_ok;
@@ -353,7 +357,20 @@ fs::FS &bsp_littlefs_fs() {
     return LittleFS;
 }
 
+size_t bsp_littlefs_total_bytes() {
+    return mounted ? LittleFS.totalBytes() : 0U;
+}
+
+size_t bsp_littlefs_used_bytes() {
+    return mounted ? LittleFS.usedBytes() : 0U;
+}
+
 bool bsp_littlefs_sync_from(fs::FS &source, const char *source_dir) {
+#if !PROJECT_DEBUG_MODE
+    (void)source;
+    (void)source_dir;
+    return false;
+#else
     if (!mounted) {
         Serial.println("[LittleFS] SYNC FAIL filesystem unavailable");
         return false;
@@ -410,6 +427,7 @@ bool bsp_littlefs_sync_from(fs::FS &source, const char *source_dir) {
                   static_cast<unsigned long long>(stats.deleted_bytes));
     bsp_littlefs_unlock();
     return sync_ok && stats.failed == 0U;
+#endif
 }
 
 bool bsp_littlefs_lock(TickType_t timeout) {

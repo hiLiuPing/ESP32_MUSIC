@@ -8,6 +8,7 @@
 #include "app/system_notify.h"
 #include "app/weather_network.h"
 #include "app/weather_service.h"
+#include "task/file_manager_task.h"
 #include "task/task_system.h"
 
 TaskHandle_t WeatherSyncTaskHandle = nullptr;
@@ -16,6 +17,13 @@ namespace {
 constexpr uint8_t MAX_RETRIES = 5U;
 constexpr uint32_t RETRY_DELAY_MS = 1000U;
 TimerHandle_t sync_timer = nullptr;
+constexpr uint32_t PORTAL_STOP_TIMEOUT_MS = 3000U;
+volatile bool sync_busy = false;
+
+struct SyncBusyGuard {
+    SyncBusyGuard() { sync_busy = true; }
+    ~SyncBusyGuard() { sync_busy = false; }
+};
 
 void sync_timer_callback(TimerHandle_t timer) {
     (void)timer;
@@ -63,6 +71,7 @@ void mark_sync_failure(bool ntp_ok, bool weather_ok) {
 }
 
 bool perform_sync() {
+    SyncBusyGuard busy_guard;
     Serial.println("[WEATHER] sync begin");
     if (!weather_network_has_profiles()) {
         Serial.println("[WEATHER] sync skipped: no saved WiFi profile");
@@ -178,7 +187,23 @@ bool perform_sync() {
     return true;
 }
 
+bool wait_file_manager_stopped(uint32_t timeout_ms) {
+    const uint32_t start = millis();
+    while (file_manager_is_active() &&
+           static_cast<uint32_t>(millis() - start) < timeout_ms) {
+        vTaskDelay(pdMS_TO_TICKS(50U));
+    }
+    return !file_manager_is_active();
+}
+
 void show_ap_notice() {
+    if (file_manager_is_active()) {
+        (void)file_manager_request(FILE_MANAGER_STOP_AP);
+        if (!wait_file_manager_stopped(PORTAL_STOP_TIMEOUT_MS)) {
+            system_notify_post(SystemNotifyType::Error, "FILE AP BUSY");
+            return;
+        }
+    }
     if (weather_network_start_ap()) {
         const String message = weather_network_ap_message();
         system_notify_post(SystemNotifyType::Info, message.c_str());
@@ -196,6 +221,10 @@ bool weather_sync_request(uint32_t request) {
 
 bool weather_sync_is_provisioning() {
     return weather_network_ap_active();
+}
+
+bool weather_sync_is_busy() {
+    return sync_busy;
 }
 
 void weather_sync_task(void *parameter) {

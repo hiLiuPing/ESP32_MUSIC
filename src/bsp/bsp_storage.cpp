@@ -31,3 +31,11 @@ bool bsp_storage_available() {
 fs::FS &bsp_storage_fs() {
     return SD;
 }
+
+size_t bsp_storage_total_bytes() {
+    return bsp_storage_available() ? SD.totalBytes() : 0U;
+}
+
+size_t bsp_storage_used_bytes() {
+    return bsp_storage_available() ? SD.usedBytes() : 0U;
+}

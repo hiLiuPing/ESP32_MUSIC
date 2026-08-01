@@ -63,6 +63,8 @@ enum class PlayerCommandType : uint8_t {
     ChangeVolume,
     CyclePlaybackMode,
     ApplyAudioSettings,
+    StopForStorage,
+    RefreshLibraryStopped,
     Rescan,
 };
 

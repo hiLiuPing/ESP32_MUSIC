@@ -9,6 +9,7 @@
 #include "task/user_AppDataTask.h"
 #include "task/user_KeyManllegeTask.h"
 #include "task/user_KeyTask.h"
+#include "task/file_manager_task.h"
 #include "task/weather_sync_task.h"
 
 QueueHandle_t KeyEventQueue = nullptr;
@@ -79,6 +80,9 @@ void task_system_init() {
                  "AppData");
     require_task(xTaskCreatePinnedToCore(gui_task, "Gui", 6144, nullptr, 2, nullptr, 0),
                  "Gui");
+    require_task(xTaskCreate(file_manager_task, "FileManager", 12288, nullptr, 1,
+                             &FileManagerTaskHandle),
+                 "FileManager");
 #if !HOME_DEMO_ENABLE
     require_task(xTaskCreate(weather_sync_task, "WeatherSync", 12288, nullptr, 1,
                              &WeatherSyncTaskHandle),
