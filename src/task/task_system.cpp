@@ -4,6 +4,7 @@
 
 #include "app/app_data.h"
 #include "app/home_demo.h"
+#include "app/lyrics_service.h"
 #include "app/music_library.h"
 #include "app/player_app.h"
 #include "task/user_AppDataTask.h"
@@ -18,6 +19,7 @@ QueueHandle_t PlayerCommandQueue = nullptr;
 QueueHandle_t PlayerStatusQueue = nullptr;
 SemaphoreHandle_t GuiWakeSemaphore = nullptr;
 SemaphoreHandle_t MusicLibraryMutex = nullptr;
+SemaphoreHandle_t LyricsMutex = nullptr;
 SemaphoreHandle_t PlayerStatusMutex = nullptr;
 SemaphoreHandle_t AppDataMutex = nullptr;
 EventGroupHandle_t HardwareEventGroup = nullptr;
@@ -49,6 +51,7 @@ void task_system_init() {
     PlayerStatusQueue = xQueueCreate(1, sizeof(PlayerStatus));
     GuiWakeSemaphore = xSemaphoreCreateBinary();
     MusicLibraryMutex = xSemaphoreCreateMutex();
+    LyricsMutex = xSemaphoreCreateMutex();
     PlayerStatusMutex = xSemaphoreCreateMutex();
     AppDataMutex = xSemaphoreCreateMutex();
     HardwareEventGroup = xEventGroupCreate();
@@ -60,11 +63,13 @@ void task_system_init() {
     require_handle(PlayerStatusQueue, "PlayerStatusQueue");
     require_handle(GuiWakeSemaphore, "GuiWakeSemaphore");
     require_handle(MusicLibraryMutex, "MusicLibraryMutex");
+    require_handle(LyricsMutex, "LyricsMutex");
     require_handle(PlayerStatusMutex, "PlayerStatusMutex");
     require_handle(AppDataMutex, "AppDataMutex");
     require_handle(HardwareEventGroup, "HardwareEventGroup");
 
     music_library_attach_mutex(MusicLibraryMutex);
+    lyrics_service_attach_mutex(LyricsMutex);
     player_app_attach_mutex(PlayerStatusMutex);
     app_data_attach_mutex(AppDataMutex);
 

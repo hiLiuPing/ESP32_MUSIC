@@ -11,6 +11,7 @@
 #include <esp_system.h>
 
 #include "app/music_library.h"
+#include "app/lyrics_service.h"
 #include "app/audio_settings.h"
 #include "bsp/bsp_audio.h"
 #include "bsp/bsp_storage.h"
@@ -224,6 +225,7 @@ void service_sleep_timer() {
     audio.stopSong();
     eof_received = false;
     track_started = false;
+    lyrics_service_clear();
     status.elapsed_seconds = 0U;
     status.duration_seconds = 0U;
     status.state = PlayerState::Stopped;
@@ -408,6 +410,7 @@ bool start_track_once(uint16_t index) {
     char path[PLAYER_PATH_LENGTH] = {};
     char name[PLAYER_NAME_LENGTH] = {};
     uint16_t global_index = 0U;
+    lyrics_service_clear();
     if (!sd_ready) {
         status.state = PlayerState::NoSd;
         status.error = PlayerError::SdUnavailable;
@@ -448,6 +451,7 @@ bool start_track_once(uint16_t index) {
         return false;
     }
 
+    (void)lyrics_service_load(bsp_storage_fs(), path);
     if (!audio.connecttoFS(bsp_storage_fs(), path)) {
         track_started = false;
         status.state = PlayerState::Error;
@@ -494,6 +498,7 @@ void set_no_playable_tracks() {
     eof_received = false;
     track_started = false;
     clear_weather_recovery();
+    lyrics_service_clear();
     status.elapsed_seconds = 0U;
     status.duration_seconds = 0U;
     status.state = PlayerState::Error;
@@ -545,6 +550,7 @@ void rescan_library(bool keep_stopped = false) {
     track_started = false;
     eof_received = false;
     clear_weather_recovery();
+    lyrics_service_clear();
     current_path[0] = '\0';
     status.elapsed_seconds = 0;
     status.duration_seconds = 0;
@@ -602,6 +608,7 @@ void stop_for_storage() {
     eof_received = false;
     track_started = false;
     clear_weather_recovery();
+    lyrics_service_clear();
     current_path[0] = '\0';
     status.elapsed_seconds = 0U;
     status.duration_seconds = 0U;

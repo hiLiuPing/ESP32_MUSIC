@@ -5,6 +5,7 @@
 #include "app/key_types.h"
 #include "app/motion_gesture.h"
 #include "app/sensor_service.h"
+#include "gui/page_manager.h"
 #include "task/task_system.h"
 
 namespace {
@@ -60,19 +61,21 @@ void user_KeyManllegeTask(void *parameter) {
     for (;;) {
         KeyEvent event = {};
         if (xQueueReceive(KeyEventQueue, &event, KEY_MANAGER_WAIT_TICKS) == pdTRUE) {
-            SensorSnapshot snapshot = {};
-            sensor_service_get_snapshot(&snapshot);
-            const bool motion_ready = motion_gesture_arm(snapshot);
-            refresh_gesture_window(&gesture_active_until_ms);
-            gesture_was_active = true;
-            Serial.printf(
-                "[KEY] motion window ready=%u valid=%u stale=%u acc=%d,%d,%d\n",
-                motion_ready ? 1U : 0U,
-                snapshot.motion.health.valid ? 1U : 0U,
-                snapshot.motion.health.stale ? 1U : 0U,
-                snapshot.motion.value.acceleration_mg[0],
-                snapshot.motion.value.acceleration_mg[1],
-                snapshot.motion.value.acceleration_mg[2]);
+            if (gui_page_current() == UiPage::Home) {
+                SensorSnapshot snapshot = {};
+                sensor_service_get_snapshot(&snapshot);
+                const bool motion_ready = motion_gesture_arm(snapshot);
+                refresh_gesture_window(&gesture_active_until_ms);
+                gesture_was_active = true;
+                Serial.printf(
+                    "[KEY] motion window ready=%u valid=%u stale=%u acc=%d,%d,%d\n",
+                    motion_ready ? 1U : 0U,
+                    snapshot.motion.health.valid ? 1U : 0U,
+                    snapshot.motion.health.stale ? 1U : 0U,
+                    snapshot.motion.value.acceleration_mg[0],
+                    snapshot.motion.value.acceleration_mg[1],
+                    snapshot.motion.value.acceleration_mg[2]);
+            }
 
             if (xQueueSend(GuiKeyQueue, &event, 0) != pdTRUE) {
                 ++dropped_events;
@@ -86,7 +89,8 @@ void user_KeyManllegeTask(void *parameter) {
         }
 
         const uint32_t now = millis();
-        if (gesture_window_active(now, gesture_active_until_ms)) {
+        if (gui_page_current() == UiPage::Home &&
+            gesture_window_active(now, gesture_active_until_ms)) {
             SensorSnapshot snapshot = {};
             sensor_service_get_snapshot(&snapshot);
             const MotionGesture gesture = motion_gesture_update(snapshot);

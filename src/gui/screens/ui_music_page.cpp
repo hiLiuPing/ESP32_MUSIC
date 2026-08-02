@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "app/lyrics_service.h"
 #include "app/music_library.h"
 #include "gui/egui_port.h"
 #include "gui/gui_common.h"
@@ -31,6 +32,7 @@ constexpr int16_t SPECTRUM_HEIGHT = 61;
 constexpr int16_t SPECTRUM_PEAK_HEIGHT = 2;
 constexpr int16_t PROGRESS_Y = 95;
 constexpr int16_t TIME_Y = 105;
+constexpr egui_region_t LYRIC_REGION = {{116, TIME_Y}, {152, 18}};
 constexpr egui_region_t TITLE_REGION = {{12, 1}, {360, 20}};
 constexpr egui_region_t SPECTRUM_REGION = {{12, 23}, {360, 65}};
 constexpr egui_region_t PROGRESS_REGION = {{12, 91}, {360, 34}};
@@ -70,6 +72,7 @@ uint16_t playlist_glyph_cursor = 0U;
 uint16_t playlist_glyph_track_count = 0U;
 uint32_t playlist_glyph_library_version = 0U;
 bool playlist_glyph_cache_full = false;
+char displayed_lyric[LYRICS_LINE_BUFFER_SIZE] = {};
 
 uint8_t spectrum_pixel_height(uint8_t level) {
     if (level == 0) return 0;
@@ -90,6 +93,29 @@ const egui_font_t *music_font() {
     const egui_font_t *font = ui_heiti_font_get_cached(16U);
     return font != nullptr ? font
                            : reinterpret_cast<const egui_font_t *>(EGUI_CONFIG_FONT_DEFAULT);
+}
+
+const egui_font_t *lyric_font() {
+    const egui_font_t *font = ui_heiti_font_get_cached(12U);
+    return font != nullptr ? font
+                           : reinterpret_cast<const egui_font_t *>(EGUI_CONFIG_FONT_DEFAULT);
+}
+
+bool refresh_displayed_lyric() {
+    char lyric[LYRICS_LINE_BUFFER_SIZE] = {};
+    if (player_status.state == PlayerState::Playing ||
+        player_status.state == PlayerState::Paused) {
+        (void)lyrics_service_get_current_line(player_status.elapsed_seconds,
+                                              lyric, sizeof(lyric));
+    }
+    const bool changed = std::strcmp(displayed_lyric, lyric) != 0;
+    if (changed) {
+        std::snprintf(displayed_lyric, sizeof(displayed_lyric), "%s", lyric);
+        if (displayed_lyric[0] != '\0') {
+            (void)ui_heiti_font_cache_text(12U, displayed_lyric);
+        }
+    }
+    return changed;
 }
 
 void draw_centered_text(egui_canvas_t *canvas, const egui_font_t *font,
@@ -323,15 +349,10 @@ void draw_main(egui_canvas_t *canvas) {
                                       EGUI_COLOR_BLACK, EGUI_ALPHA_100);
         draw_right_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
                         duration, 268, TIME_Y, 100, 18);
-        if (player_status.sleep_timer_remaining_seconds > 0U) {
-            char sleep_time[12] = {};
-            char sleep_label[24] = {};
-            gui_format_time(player_status.sleep_timer_remaining_seconds,
-                            sleep_time, sizeof(sleep_time));
-            std::snprintf(sleep_label, sizeof(sleep_label), "SLEEP %s", sleep_time);
-            draw_centered_text(canvas,
-                               EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
-                               sleep_label, 128, TIME_Y, 128, 18);
+        if (displayed_lyric[0] != '\0') {
+            draw_centered_text(canvas, lyric_font(), displayed_lyric,
+                               LYRIC_REGION.location.x, LYRIC_REGION.location.y,
+                               LYRIC_REGION.size.width, LYRIC_REGION.size.height);
         }
     }
 
@@ -630,6 +651,7 @@ void enter() {
         spectrum_peak_ticks[index] = 0;
     }
     last_spectrum_frame_ms = millis();
+    (void)refresh_displayed_lyric();
 }
 
 void exit() {
@@ -637,6 +659,7 @@ void exit() {
     subview = MusicSubview::Main;
     std::memset(spectrum_peaks, 0, sizeof(spectrum_peaks));
     std::memset(spectrum_peak_ticks, 0, sizeof(spectrum_peak_ticks));
+    displayed_lyric[0] = '\0';
 }
 
 void navigation_changed(bool active) {
@@ -991,6 +1014,7 @@ bool update_status(const PlayerStatus &status) {
 
     const PlayerStatus previous = player_status;
     player_status = status;
+    const bool lyric_changed = refresh_displayed_lyric();
     if (previous.library_version != status.library_version ||
         previous.track_count != status.track_count) {
         reset_playlist_glyph_prefetch();
@@ -1018,8 +1042,7 @@ bool update_status(const PlayerStatus &status) {
             }
             if (previous.elapsed_seconds != status.elapsed_seconds ||
                 previous.duration_seconds != status.duration_seconds ||
-                previous.sleep_timer_remaining_seconds !=
-                    status.sleep_timer_remaining_seconds) {
+                lyric_changed) {
                 egui_view_invalidate_region(EGUI_VIEW_OF(&view), &PROGRESS_REGION);
             }
             return false;

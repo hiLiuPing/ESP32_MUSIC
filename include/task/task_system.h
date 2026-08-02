@@ -23,6 +23,7 @@ extern QueueHandle_t PlayerCommandQueue;
 extern QueueHandle_t PlayerStatusQueue;
 extern SemaphoreHandle_t GuiWakeSemaphore;
 extern SemaphoreHandle_t MusicLibraryMutex;
+extern SemaphoreHandle_t LyricsMutex;
 extern SemaphoreHandle_t PlayerStatusMutex;
 extern SemaphoreHandle_t AppDataMutex;
 extern EventGroupHandle_t HardwareEventGroup;
