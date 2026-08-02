@@ -361,6 +361,11 @@ void gui_page_handle_key(const KeyEvent &event) {
 
     if ((event.id == KeyId::Right) && (event.gesture == KeyGesture::LongPress)) {
         if (internal_navigation) {
+            // Let nested page views consume Back before leaving page navigation.
+            if ((current_page->key_consume != nullptr) && current_page->key_consume(event)) {
+                dirty = true;
+                return;
+            }
             internal_navigation = false;
             if (current_page->navigation_changed != nullptr) {
                 current_page->navigation_changed(false);

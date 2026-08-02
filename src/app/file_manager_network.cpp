@@ -948,6 +948,10 @@ void file_manager_network_stop_ap() {
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
     ap_active = false;
+
+    if (!task_post_player_command(PlayerCommandType::RefreshLibraryStopped)) {
+        Serial.println("[FILE_MANAGER] unable to request player library refresh");
+    }
 }
 
 void file_manager_network_process_ap() {

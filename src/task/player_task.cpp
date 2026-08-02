@@ -18,7 +18,7 @@
 #include "task/task_system.h"
 
 namespace {
-constexpr size_t FFT_SIZE = 512;
+constexpr size_t FFT_SIZE = 256;
 constexpr int AUDIO_PSRAM_BUFFER_BYTES = 512 * 1024;
 constexpr uint32_t SPECTRUM_INTERVAL_MS = 80;
 constexpr uint32_t STATUS_INTERVAL_MS = 100;
@@ -90,6 +90,7 @@ bool ends_with_ignore_case(const char *path, const char *extension) {
     }
     return true;
 }
+
 
 void reset_track_attempts() {
     std::memset(attempted_tracks, 0, sizeof(attempted_tracks));
