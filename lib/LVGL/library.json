@@ -1,0 +1,25 @@
+{
+  "name": "LVGL",
+  "version": "9.5.0",
+  "frameworks": ["arduino"],
+  "platforms": ["espressif32"],
+  "build": {
+    "srcDir": "src",
+    "srcFilter": [
+      "+<*>",
+      "-<drivers/**>",
+      "-<debugging/**>",
+      "-<libs/**>", "+<libs/fsdrv/**>", "+<libs/bin_decoder/**>",
+      "-<others/**>", "+<others/translation/**>",
+      "-<widgets/**>", "+<widgets/label/**>", "+<widgets/bar/**>",
+      "-<draw/dma2d/**>", "-<draw/espressif/**>", "-<draw/eve/**>",
+      "-<draw/nema_gfx/**>", "-<draw/nxp/**>", "-<draw/opengles/**>",
+      "-<draw/renesas/**>", "-<draw/sdl/**>", "-<draw/st/**>",
+      "-<draw/convert/neon/**>", "-<draw/convert/helium/**>",
+      "-<draw/sw/arm2d/**>", "-<draw/sw/blend/arm2d/**>",
+      "-<draw/sw/blend/helium/**>", "-<draw/sw/blend/neon/**>",
+      "-<draw/sw/blend/riscv_v/**>",
+      "-<font/freetype/**>", "-<font/imgfont/**>", "-<font/tiny_ttf/**>"
+    ]
+  }
+}

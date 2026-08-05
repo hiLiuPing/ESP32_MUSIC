@@ -3,7 +3,7 @@
 #include "app/settings_app.h"
 #include "bsp/bsp_display.h"
 #include "gui/page_manager.h"
-#include "gui/egui_port.h"
+#include "gui/lv_port.h"
 #include "gui/screens/ui_music_page.h"
 #include "gui/ui.h"
 #include "task/task_system.h"
@@ -12,8 +12,8 @@ void gui_task(void *parameter) {
     (void)parameter;
     xEventGroupWaitBits(HardwareEventGroup, HW_EVENT_DISPLAY_READY,
                         pdFALSE, pdTRUE, portMAX_DELAY);
-    if (!egui_port_start()) {
-        Serial.println("[GUI] failed to start EGUI");
+    if (!lv_port_start()) {
+        Serial.println("[GUI] failed to start LVGL");
         vTaskDelete(nullptr);
     }
 
@@ -26,7 +26,7 @@ void gui_task(void *parameter) {
             if (display_sleeping) {
                 bsp_display().display_on(true);
                 display_sleeping = false;
-                egui_core_force_refresh(egui_port_core());
+                lv_port_force_refresh();
             }
             gui_page_handle_key(event);
         }
@@ -39,7 +39,7 @@ void gui_task(void *parameter) {
         ui_music_page_cache_service();
         gui_page_service();
         gui_page_render();
-        egui_port_poll();
+        lv_port_poll();
 
         const AppSettings settings = settings_app_get();
         if (!display_sleeping && settings.screen_idle_min != 0U &&

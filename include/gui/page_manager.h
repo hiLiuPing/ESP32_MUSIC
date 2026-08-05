@@ -2,6 +2,9 @@
 
 #include "gui/page.h"
 
+/* The active screen is used by the LVGL popup layer. */
+lv_obj_t *gui_page_active_root();
+
 void gui_page_manager_init();
 bool gui_page_manager_register(GuiPageDescriptor *page);
 bool gui_page_manager_load(UiPage page);

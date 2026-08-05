@@ -3,7 +3,6 @@
 #include <Arduino.h>
 
 #include "app/poetry_app.h"
-#include "gui/egui_port.h"
 
 constexpr uint8_t UI_POETRY_CACHE_SLOT_COUNT = 5U;
 constexpr uint8_t UI_POETRY_FONT_SIZE = 18U;
@@ -42,6 +41,3 @@ bool ui_poetry_cache_init();
 bool ui_poetry_cache_service();
 const UiPoetryCacheSlot *ui_poetry_cache_select(PoetryCollection collection);
 size_t ui_poetry_cache_ready_count(PoetryCollection collection);
-void ui_poetry_cache_draw(egui_canvas_t *canvas, const UiPoetryCacheSlot *slot,
-                          int16_t panel_x = UI_POETRY_PANEL_X,
-                          int16_t panel_y = UI_POETRY_PANEL_Y);
