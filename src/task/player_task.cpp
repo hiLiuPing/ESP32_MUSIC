@@ -23,6 +23,7 @@ constexpr int AUDIO_PSRAM_BUFFER_BYTES = 512 * 1024;
 constexpr uint32_t SPECTRUM_INTERVAL_MS = 80;
 constexpr uint32_t STATUS_INTERVAL_MS = 100;
 constexpr uint32_t PLAYER_DIAGNOSTIC_INTERVAL_MS = 30000;
+constexpr uint32_t VOLUME_FADE_STEP_MS = 30;
 constexpr uint32_t WEATHER_RECOVERY_GRACE_MS = 15000;
 constexpr float SPECTRUM_MIN_HZ = 80.0F;
 constexpr float SPECTRUM_MAX_HZ = 16000.0F;
@@ -46,6 +47,9 @@ uint32_t last_sleep_timer_ms = 0U;
 TickType_t last_status_tick = 0;
 TickType_t last_spectrum_tick = 0;
 uint32_t last_diagnostic_ms = 0U;
+uint8_t output_volume = 0U;
+uint32_t volume_fade_last_ms = 0U;
+bool volume_fade_active = false;
 
 alignas(16) float fft_data[FFT_SIZE * 2] = {};
 alignas(16) float fft_table[FFT_SIZE] = {};
@@ -203,6 +207,42 @@ void persist_runtime_audio_settings() {
     (void)audio_settings_update(current_audio_settings());
 }
 
+void set_output_volume(uint8_t volume) {
+    output_volume = volume;
+    audio.setVolume(volume);
+}
+
+void apply_output_volume() {
+    volume_fade_active = false;
+    set_output_volume(status.state == PlayerState::Paused ? 0U : status.volume);
+}
+
+void start_output_volume_fade() {
+    volume_fade_active = true;
+    volume_fade_last_ms = millis();
+    set_output_volume(0U);
+}
+
+void service_output_volume_fade() {
+    if (!volume_fade_active) return;
+    if (status.state != PlayerState::Playing) {
+        volume_fade_active = false;
+        return;
+    }
+    const uint8_t target = status.volume;
+    if (output_volume >= target) {
+        volume_fade_active = false;
+        return;
+    }
+    const uint32_t now = millis();
+    const uint32_t steps = (now - volume_fade_last_ms) / VOLUME_FADE_STEP_MS;
+    if (steps == 0U) return;
+    const uint32_t next = std::min<uint32_t>(target,
+                                             static_cast<uint32_t>(output_volume) + steps);
+    set_output_volume(static_cast<uint8_t>(next));
+    volume_fade_last_ms += steps * VOLUME_FADE_STEP_MS;
+}
+
 void arm_sleep_timer(uint16_t minutes) {
     status.sleep_timer_remaining_seconds = static_cast<uint32_t>(minutes) * 60UL;
     last_sleep_timer_ms = millis();
@@ -252,7 +292,7 @@ void apply_audio_settings(const AudioSettings &requested, bool persist,
     status.treble_db = settings.treble_db;
     status.surround_depth = settings.surround_depth;
     status.sleep_timer_min = settings.sleep_timer_min;
-    audio.setVolume(status.volume);
+    apply_output_volume();
     if (codec_ready) {
         bsp_audio_apply_codec_settings(status.bass_db, status.treble_db,
                                        status.surround_depth);
@@ -502,6 +542,7 @@ bool start_track_once(uint16_t index) {
     status.duration_seconds = 0;
     status.state = PlayerState::Playing;
     status.error = PlayerError::None;
+    start_output_volume_fade();
     Serial.printf("[PLAYER] playing %s\n", path);
     publish(true);
     return true;
@@ -524,6 +565,7 @@ bool restart_current_track(uint32_t resume_file_pos) {
     track_started = true;
     status.state = PlayerState::Playing;
     status.error = PlayerError::None;
+    start_output_volume_fade();
     Serial.printf("[PLAYER] weather recovery resumed pos=%lu path=%s\n",
                   static_cast<unsigned long>(resume_file_pos), current_path);
     publish(true);
@@ -745,7 +787,12 @@ void handle_command(const PlayerCommand &command) {
                 if (audio.pauseResume()) {
                     status.state = (status.state == PlayerState::Playing)
                                        ? PlayerState::Paused : PlayerState::Playing;
-                    if (status.state == PlayerState::Paused) clear_spectrum();
+                    if (status.state == PlayerState::Paused) {
+                        clear_spectrum();
+                        apply_output_volume();
+                    } else {
+                        start_output_volume_fade();
+                    }
                     publish(true);
                     succeeded = true;
                 }
@@ -771,6 +818,7 @@ void handle_command(const PlayerCommand &command) {
             if (status.state == PlayerState::Paused) {
                 if (audio.pauseResume()) {
                     status.state = PlayerState::Playing;
+                    start_output_volume_fade();
                     publish(true);
                     succeeded = true;
                 }
@@ -790,6 +838,7 @@ void handle_command(const PlayerCommand &command) {
             if ((status.state == PlayerState::Playing) && audio.pauseResume()) {
                 status.state = PlayerState::Paused;
                 clear_spectrum();
+                apply_output_volume();
                 publish(true);
                 succeeded = true;
             }
@@ -820,7 +869,7 @@ void handle_command(const PlayerCommand &command) {
         }
         case PlayerCommandType::SetVolume:
             status.volume = constrain(command.value, PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX);
-            audio.setVolume(status.volume);
+            apply_output_volume();
             persist_runtime_audio_settings();
             publish(true);
             post_volume_feedback(command.show_feedback, 0);
@@ -828,7 +877,7 @@ void handle_command(const PlayerCommand &command) {
         case PlayerCommandType::ChangeVolume:
             status.volume = constrain(static_cast<int>(status.volume) + command.value,
                                       PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX);
-            audio.setVolume(status.volume);
+            apply_output_volume();
             persist_runtime_audio_settings();
             publish(true);
             post_volume_feedback(command.show_feedback, command.value);
@@ -910,7 +959,7 @@ void player_task(void *parameter) {
             bsp_audio_apply_output_route(saved_audio_settings.amplifier_enabled);
         }
     }
-    audio.setVolume(status.volume);
+    set_output_volume(0U);
     rescan_library();
 
     for (;;) {
@@ -923,6 +972,7 @@ void player_task(void *parameter) {
 
         if (status.state == PlayerState::Playing) {
             audio.loop();
+            service_output_volume_fade();
             process_spectrum_frame();
             if (eof_received) {
                 eof_received = false;

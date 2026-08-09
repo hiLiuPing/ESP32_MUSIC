@@ -14,6 +14,7 @@
 namespace {
 enum class View : uint8_t { Main, Volume, Playlists, Tracks, Audio };
 constexpr uint8_t kControlCount = 7;
+constexpr uint8_t kAudioItemCount = 6;
 lv_obj_t *root = nullptr;
 lv_obj_t *title = nullptr;
 lv_obj_t *track = nullptr;
@@ -30,6 +31,8 @@ uint16_t track_index = 0;
 bool navigation = false;
 bool editing = false;
 AudioSettings audio = {};
+AudioSettings saved_audio = {};
+uint8_t audio_selected = 0;
 uint8_t bars[PLAYER_SPECTRUM_BANDS] = {};
 uint8_t peaks[PLAYER_SPECTRUM_BANDS] = {};
 uint32_t last_frame = 0;
@@ -91,6 +94,91 @@ bool set_text_if_changed(lv_obj_t *label, const char *text) {
     return false;
 }
 
+const char *audio_label(uint8_t item) {
+    switch (item) {
+        case 0: return "音量";
+        case 1: return "功放";
+        case 2: return "低音";
+        case 3: return "高音";
+        case 4: return "环绕";
+        case 5: return "定时关闭";
+        default: return "";
+    }
+}
+
+void format_audio_value(uint8_t item, char *out, size_t size) {
+    switch (item) {
+        case 0: std::snprintf(out, size, "%u", audio.volume); break;
+        case 1: std::snprintf(out, size, "%s", audio.amplifier_enabled ? "开" : "关"); break;
+        case 2: std::snprintf(out, size, "%+d dB", audio.bass_db); break;
+        case 3: std::snprintf(out, size, "%+d dB", audio.treble_db); break;
+        case 4: std::snprintf(out, size, "%u / 15", audio.surround_depth); break;
+        case 5: std::snprintf(out, size, audio.sleep_timer_min ? "%u 分钟" : "关闭", audio.sleep_timer_min); break;
+        default: out[0] = '\0'; break;
+    }
+}
+
+void format_audio_settings(char *out, size_t size) {
+    if (size == 0U) return;
+    out[0] = '\0';
+    for (uint8_t item = 0; item < kAudioItemCount; ++item) {
+        char value[24] = {};
+        format_audio_value(item, value, sizeof(value));
+        const size_t used = std::strlen(out);
+        if (used >= size) break;
+        std::snprintf(out + used, size - used, "%c %s: %s%s",
+                      item == audio_selected ? '>' : ' ', audio_label(item), value,
+                      item + 1U == kAudioItemCount ? "" : "\n");
+    }
+}
+
+void adjust_audio(int delta) {
+    switch (audio_selected) {
+        case 0:
+            audio.volume = static_cast<uint8_t>(constrain(
+                static_cast<int>(audio.volume) + delta, PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX));
+            break;
+        case 1: audio.amplifier_enabled = !audio.amplifier_enabled; break;
+        case 2:
+            audio.bass_db = static_cast<int8_t>(constrain(
+                static_cast<int>(audio.bass_db) + delta, -12, 12));
+            break;
+        case 3:
+            audio.treble_db = static_cast<int8_t>(constrain(
+                static_cast<int>(audio.treble_db) + delta, -12, 12));
+            break;
+        case 4:
+            audio.surround_depth = static_cast<uint8_t>(constrain(
+                static_cast<int>(audio.surround_depth) + delta, 0, 15));
+            break;
+        case 5:
+            if (delta > 0) {
+                audio.sleep_timer_min = audio.sleep_timer_min == 0U
+                    ? AUDIO_SLEEP_TIMER_MIN
+                    : (audio.sleep_timer_min >= AUDIO_SLEEP_TIMER_MAX
+                           ? 0U
+                           : static_cast<uint16_t>(audio.sleep_timer_min + 30U));
+            } else {
+                audio.sleep_timer_min = audio.sleep_timer_min == 0U
+                    ? AUDIO_SLEEP_TIMER_MAX
+                    : (audio.sleep_timer_min <= AUDIO_SLEEP_TIMER_MIN
+                           ? 0U
+                           : static_cast<uint16_t>(audio.sleep_timer_min - 30U));
+            }
+            break;
+        default: return;
+    }
+    (void)task_post_player_audio_settings(audio, false);
+}
+
+void discard_audio_changes() {
+    if (view == View::Audio && editing) {
+        (void)task_post_player_audio_settings(saved_audio, false);
+        audio = saved_audio;
+    }
+    editing = false;
+}
+
 void redraw() {
     const char *heading = view == View::Main ? "音乐" : view == View::Volume ? "音量" : view == View::Playlists ? "播放列表" : view == View::Tracks ? "曲目" : (editing ? "音频设置*" : "音频设置");
     if (view == View::Main) {
@@ -122,7 +210,7 @@ void redraw() {
         if (view == View::Volume) { char t[32] = {}; std::snprintf(t, sizeof(t), "音量 %u", state.volume); set_text_if_changed(body, t); }
     else if (view == View::Playlists) { char t[768] = {}; size_t n = music_library_playlist_count(); for (size_t i = 0; i < n && i < 7; ++i) { char name[96] = {}; size_t tracks = 0; (void)music_library_playlist_get(i, name, sizeof(name), &tracks); std::snprintf(t + std::strlen(t), sizeof(t) - std::strlen(t), "%c %s (%u)\n", i == playlist ? '>' : ' ', name, static_cast<unsigned>(tracks)); } set_text_if_changed(body, t); }
     else if (view == View::Tracks) { char t[768] = {}; size_t n = 0; (void)music_library_playlist_get(playlist, nullptr, 0, &n); for (size_t i = 0; i < n && i < 7; ++i) { char name[PLAYER_NAME_LENGTH] = {}; (void)music_library_playlist_track_get(playlist, i, nullptr, nullptr, 0, name, sizeof(name)); std::snprintf(t + std::strlen(t), sizeof(t) - std::strlen(t), "%c %s\n", i == track_index ? '>' : ' ', name); } set_text_if_changed(body, t); }
-        else { char t[192] = {}; std::snprintf(t, sizeof(t), "音量 %u\n功放 %s\n低音 %d\n高音 %d\n环绕 %u", audio.volume, audio.amplifier_enabled ? "开" : "关", audio.bass_db, audio.treble_db, audio.surround_depth); set_text_if_changed(body, t); }
+        else if (view == View::Audio) { char t[256] = {}; format_audio_settings(t, sizeof(t)); set_text_if_changed(body, t); }
     }
 }
 
@@ -137,12 +225,11 @@ void create_page() {
     page.view = root;
 }
 
-void enter() { view = View::Main; selected = 3; navigation = editing = false; last_frame = millis(); displayed_lyric_second = UINT32_MAX; std::memset(bars, 0, sizeof(bars)); std::memset(peaks, 0, sizeof(peaks)); lv_obj_set_style_text_font(body, ui_heiti_font_get(16), 0); redraw(); lv_obj_invalidate(root); }
-void exit() { editing = false; }
-void navigation_changed(bool active) { navigation = active; if (!active) { view = View::Main; editing = false; } redraw(); lv_obj_invalidate(root); }
-void adjust_audio(int delta) { audio.volume = static_cast<uint8_t>(constrain(static_cast<int>(audio.volume) + delta, PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX)); (void)task_post_player_audio_settings(audio, false); }
+void enter() { view = View::Main; selected = 3; audio_selected = 0; navigation = editing = false; last_frame = millis(); displayed_lyric_second = UINT32_MAX; std::memset(bars, 0, sizeof(bars)); std::memset(peaks, 0, sizeof(peaks)); lv_obj_set_style_text_font(body, ui_heiti_font_get(16), 0); redraw(); lv_obj_invalidate(root); }
+void exit() { discard_audio_changes(); }
+void navigation_changed(bool active) { navigation = active; if (!active) { discard_audio_changes(); view = View::Main; } redraw(); lv_obj_invalidate(root); }
 bool consume(const KeyEvent &event) {
-    if (event.id == KeyId::Middle && event.gesture == KeyGesture::LongPress && view != View::Main) { view = View::Main; editing = false; redraw(); lv_obj_invalidate(root); return true; }
+    if (event.id == KeyId::Middle && event.gesture == KeyGesture::LongPress && view != View::Main) { discard_audio_changes(); view = View::Main; redraw(); lv_obj_invalidate(root); return true; }
     if (event.gesture != KeyGesture::Click) return false;
     const int direction = event.id == KeyId::Left ? -1 : 1;
     if (event.id == KeyId::Left || event.id == KeyId::Right) {
@@ -150,13 +237,15 @@ bool consume(const KeyEvent &event) {
         else if (view == View::Volume) (void)task_post_player_command(PlayerCommandType::ChangeVolume, direction, true);
         else if (view == View::Playlists) { const size_t c = music_library_playlist_count(); if (c) playlist = static_cast<uint16_t>((playlist + c + direction) % c); }
         else if (view == View::Tracks) { size_t c = 0; (void)music_library_playlist_get(playlist, nullptr, 0, &c); if (c) track_index = static_cast<uint16_t>((track_index + c + direction) % c); }
-        else if (editing) adjust_audio(direction); redraw(); lv_obj_invalidate(root); return true;
+        else if (view == View::Audio && editing) adjust_audio(direction);
+        else if (view == View::Audio) audio_selected = static_cast<uint8_t>((audio_selected + kAudioItemCount + direction) % kAudioItemCount);
+        redraw(); lv_obj_invalidate(root); return true;
     }
     if (event.id != KeyId::Middle) return false;
-    if (view == View::Main) { if (selected == 0) view = View::Volume; else if (selected == 1) (void)task_post_player_command(PlayerCommandType::CyclePlaybackMode, 0, true); else if (selected == 2) (void)task_post_player_command(PlayerCommandType::Previous, 0, true); else if (selected == 3) (void)task_post_player_command(PlayerCommandType::Toggle, 0, true); else if (selected == 4) (void)task_post_player_command(PlayerCommandType::Next, 0, true); else if (selected == 5) view = View::Playlists; else { view = View::Audio; audio = {state.volume, state.playback_mode, state.amplifier_enabled, state.bass_db, state.treble_db, state.surround_depth, state.sleep_timer_min}; } }
+    if (view == View::Main) { if (selected == 0) view = View::Volume; else if (selected == 1) (void)task_post_player_command(PlayerCommandType::CyclePlaybackMode, 0, true); else if (selected == 2) (void)task_post_player_command(PlayerCommandType::Previous, 0, true); else if (selected == 3) (void)task_post_player_command(PlayerCommandType::Toggle, 0, true); else if (selected == 4) (void)task_post_player_command(PlayerCommandType::Next, 0, true); else if (selected == 5) view = View::Playlists; else { view = View::Audio; audio = {state.volume, state.playback_mode, state.amplifier_enabled, state.bass_db, state.treble_db, state.surround_depth, state.sleep_timer_min}; saved_audio = audio; audio_selected = 0; editing = false; } }
     else if (view == View::Playlists) { view = View::Tracks; track_index = 0; }
     else if (view == View::Tracks) (void)task_post_player_selection(playlist, track_index);
-    else if (view == View::Audio) { if (editing) { (void)task_post_player_audio_settings(audio, true); editing = false; } else editing = true; }
+    else if (view == View::Audio) { if (editing) { (void)task_post_player_audio_settings(audio, true); saved_audio = audio; editing = false; } else editing = true; }
     redraw(); lv_obj_invalidate(root); return true;
 }
 bool service() { const uint32_t now = millis(); if (now - last_frame >= 80U) { last_frame = now; for (uint8_t i = 0; i < PLAYER_SPECTRUM_BANDS; ++i) { const uint8_t target = state.state == PlayerState::Playing ? state.spectrum[i] : 0; bars[i] = bars[i] < target ? target : bars[i] > 20 ? bars[i] - 20 : 0; peaks[i] = bars[i] > peaks[i] ? bars[i] : peaks[i] > 3 ? peaks[i] - 3 : 0; } if (view == View::Main) lv_obj_invalidate(root); } return false; }

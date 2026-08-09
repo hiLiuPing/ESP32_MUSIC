@@ -182,6 +182,8 @@ void gui_page_handle_key(const KeyEvent &event) {
         ui_poetry_popup_dismiss(); ui_system_popup_dismiss_immediate(); return;
     }
     if (event.id == KeyId::Right && event.gesture == KeyGesture::LongPress) {
+        if (!s_internal_navigation && s_current->id == UiPage::Home &&
+            s_current->key_consume != nullptr && s_current->key_consume(event)) return;
         if (s_internal_navigation && s_current->key_consume != nullptr && s_current->key_consume(event)) return;
         if (s_internal_navigation) {
             s_internal_navigation = false;
@@ -194,6 +196,8 @@ void gui_page_handle_key(const KeyEvent &event) {
             if (s_current->id == UiPage::Home && s_current->key_consume != nullptr) (void)s_current->key_consume(event);
             return;
         }
+        if (s_current->id == UiPage::Poetry && s_current->key_consume != nullptr &&
+            s_current->key_consume(event)) return;
         if (event.id == KeyId::Middle && s_current->id != UiPage::Home) {
             s_internal_navigation = true;
             if (s_current->navigation_changed != nullptr) s_current->navigation_changed(true);

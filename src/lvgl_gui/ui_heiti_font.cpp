@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <cstring>
+#include <esp_heap_caps.h>
 
 #include "bsp/bsp_littlefs.h"
 
@@ -14,7 +15,7 @@ constexpr uint8_t kSparseFull = 1U;
 constexpr uint8_t kFmt0Tiny = 2U;
 constexpr uint8_t kSparseTiny = 3U;
 constexpr uint32_t kRetryMs = 200U;
-constexpr uint8_t kCacheSlots = 48U;
+constexpr uint16_t kFallbackCacheSlots = 48U;
 constexpr uint16_t kCacheBitmapBytes = 256U;
 
 struct CmapEntry {
@@ -80,7 +81,10 @@ FontContext contexts[] = {
     FontContext("/heiti_4_18.bin", 18U),
     FontContext("/heiti_4_20.bin", 20U),
 };
-GlyphCacheEntry glyph_cache[kCacheSlots] = {};
+GlyphCacheEntry fallback_glyph_cache[kFallbackCacheSlots] = {};
+GlyphCacheEntry *glyph_cache = fallback_glyph_cache;
+size_t glyph_cache_slots = kFallbackCacheSlots;
+bool glyph_cache_in_psram = false;
 uint32_t cache_age = 0U;
 uint32_t storage_reads = 0U;
 
@@ -445,7 +449,8 @@ const lv_font_t *fallback_font(uint8_t size) {
 }
 
 GlyphCacheEntry *find_cache(FontContext &ctx, uint32_t cp) {
-    for (GlyphCacheEntry &entry : glyph_cache) {
+    for (size_t i = 0U; i < glyph_cache_slots; ++i) {
+        GlyphCacheEntry &entry = glyph_cache[i];
         if (entry.valid && entry.font == &ctx && entry.cp == cp) {
             entry.age = ++cache_age;
             return &entry;
@@ -456,7 +461,8 @@ GlyphCacheEntry *find_cache(FontContext &ctx, uint32_t cp) {
 
 GlyphCacheEntry *allocate_cache() {
     GlyphCacheEntry *oldest = &glyph_cache[0];
-    for (GlyphCacheEntry &entry : glyph_cache) {
+    for (size_t i = 0U; i < glyph_cache_slots; ++i) {
+        GlyphCacheEntry &entry = glyph_cache[i];
         if (!entry.valid) return &entry;
         if (entry.age < oldest->age) oldest = &entry;
     }
@@ -602,9 +608,64 @@ bool ui_heiti_font_warm_text(uint8_t size, const char *text) {
     return true;
 }
 
-bool ui_heiti_font_poetry_cache_init(size_t) { return true; }
+bool ui_heiti_font_poetry_cache_init(size_t max_bytes) {
+    if (glyph_cache_in_psram) return true;
+    if (!psramFound() || max_bytes < sizeof(GlyphCacheEntry)) return false;
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    const size_t requested = max_bytes < largest ? max_bytes : largest;
+    const size_t slots = requested / sizeof(GlyphCacheEntry);
+    if (slots <= kFallbackCacheSlots) return false;
+    GlyphCacheEntry *cache = static_cast<GlyphCacheEntry *>(
+        heap_caps_calloc(slots, sizeof(GlyphCacheEntry), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (cache == nullptr) return false;
+    glyph_cache = cache;
+    glyph_cache_slots = slots;
+    glyph_cache_in_psram = true;
+    cache_age = 0U;
+    Serial.printf("[FONT_CACHE] PSRAM bytes=%u slots=%u free=%u largest=%u\n",
+                  static_cast<unsigned>(slots * sizeof(GlyphCacheEntry)),
+                  static_cast<unsigned>(slots),
+                  static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)),
+                  static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)));
+    return true;
+}
+
+void ui_heiti_font_poetry_cache_reset() {
+    std::memset(glyph_cache, 0, glyph_cache_slots * sizeof(GlyphCacheEntry));
+    cache_age = 0U;
+}
+
+bool ui_heiti_font_cache_codepoint(uint8_t size, uint32_t codepoint) {
+    if (codepoint < 0x80U || codepoint == 0x0AU || codepoint == 0x0DU) return true;
+    FontContext *ctx = select_context(size);
+    return ui_heiti_font_is_ready(size) && load_cache(*ctx, codepoint) != nullptr;
+}
+
 bool ui_heiti_font_cache_text(uint8_t size, const char *text) { return ui_heiti_font_warm_text(size, text); }
-bool ui_heiti_font_text_is_cached(uint8_t size, const char *text) { return ui_heiti_font_warm_text(size, text); }
-size_t ui_heiti_font_poetry_cache_bytes() { return 0U; }
-size_t ui_heiti_font_poetry_cache_glyphs() { return 0U; }
+
+bool ui_heiti_font_text_is_cached(uint8_t size, const char *text) {
+    if (text == nullptr) return false;
+    FontContext *ctx = select_context(size);
+    while (*text != '\0') {
+        const uint8_t first = static_cast<uint8_t>(*text);
+        uint32_t cp = first;
+        size_t bytes = 1U;
+        if ((first & 0xE0U) == 0xC0U) { cp = ((first & 0x1FU) << 6U) | (static_cast<uint8_t>(text[1]) & 0x3FU); bytes = 2U; }
+        else if ((first & 0xF0U) == 0xE0U) { cp = ((first & 0x0FU) << 12U) | ((static_cast<uint8_t>(text[1]) & 0x3FU) << 6U) | (static_cast<uint8_t>(text[2]) & 0x3FU); bytes = 3U; }
+        else if ((first & 0xF8U) == 0xF0U) { cp = ((first & 7U) << 18U) | ((static_cast<uint8_t>(text[1]) & 0x3FU) << 12U) | ((static_cast<uint8_t>(text[2]) & 0x3FU) << 6U) | (static_cast<uint8_t>(text[3]) & 0x3FU); bytes = 4U; }
+        if (cp >= 0x80U && find_cache(*ctx, cp) == nullptr) return false;
+        text += bytes;
+    }
+    return true;
+}
+
+size_t ui_heiti_font_poetry_cache_bytes() {
+    return glyph_cache_in_psram ? glyph_cache_slots * sizeof(GlyphCacheEntry) : 0U;
+}
+
+size_t ui_heiti_font_poetry_cache_glyphs() {
+    size_t count = 0U;
+    for (size_t i = 0U; i < glyph_cache_slots; ++i) if (glyph_cache[i].valid) ++count;
+    return count;
+}
 uint32_t ui_heiti_font_storage_read_count() { return storage_reads; }
