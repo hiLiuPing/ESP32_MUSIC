@@ -13,6 +13,12 @@ constexpr size_t kBufferBytes = kDisplayWidth * kBufferRows * sizeof(uint16_t);
 
 lv_display_t *s_display = nullptr;
 void *s_draw_buffer = nullptr;
+uint32_t s_flush_count = 0;
+uint32_t s_display_count = 0;
+
+uint32_t tick_millis() {
+    return static_cast<uint32_t>(millis());
+}
 
 void flush(lv_display_t *display, const lv_area_t *area, uint8_t *pixels) {
     const int16_t width = static_cast<int16_t>(area->x2 - area->x1 + 1);
@@ -21,8 +27,18 @@ void flush(lv_display_t *display, const lv_area_t *area, uint8_t *pixels) {
         bsp_display().blitRgb565(area->x1, area->y1, width, height,
                                  reinterpret_cast<const uint16_t *>(pixels));
     }
-    if (lv_display_flush_is_last(display)) {
+    ++s_flush_count;
+    const bool is_last = lv_display_flush_is_last(display);
+    if (is_last) {
         bsp_display().display();
+        ++s_display_count;
+    }
+    if (s_flush_count == 1U || s_display_count == 1U ||
+        (s_flush_count % 100U) == 0U) {
+        Serial.printf("[LVGL] flush=%lu display=%lu area=(%d,%d)-(%d,%d)\n",
+                      static_cast<unsigned long>(s_flush_count),
+                      static_cast<unsigned long>(s_display_count), area->x1,
+                      area->y1, area->x2, area->y2);
     }
     lv_display_flush_ready(display);
 }
@@ -32,6 +48,7 @@ bool lv_port_start() {
     if (s_display != nullptr) return true;
 
     lv_init();
+    lv_tick_set_cb(tick_millis);
     s_draw_buffer = heap_caps_aligned_alloc(4, kBufferBytes,
                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_draw_buffer == nullptr) {

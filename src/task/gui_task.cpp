@@ -16,6 +16,8 @@ void gui_task(void *parameter) {
         Serial.println("[GUI] failed to start LVGL");
         vTaskDelete(nullptr);
     }
+    gui_init();
+    Serial.println("[GUI] LVGL UI initialized");
 
     uint32_t last_input_ms = millis();
     bool display_sleeping = false;
