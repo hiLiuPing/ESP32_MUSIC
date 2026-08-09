@@ -8,7 +8,7 @@
     "srcFilter": [
       "+<*>",
       "-<drivers/**>",
-      "-<debugging/**>",
+      "-<debugging/**>", "+<debugging/sysmon/**>",
       "-<libs/**>", "+<libs/fsdrv/**>", "+<libs/bin_decoder/**>",
       "-<others/**>", "+<others/translation/**>",
       "-<widgets/**>", "+<widgets/label/**>", "+<widgets/bar/**>",

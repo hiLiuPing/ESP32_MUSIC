@@ -87,7 +87,7 @@ WeatherScene_t scene_for_icon(uint16_t icon_id) {
     if (icon_id == 306U || icon_id == 314U) return WEATHER_SCENE_MODERATE_RAIN;
     if (icon_id == 307U || icon_id == 310U) return WEATHER_SCENE_HEAVY_RAIN;
     if (icon_id >= 400U && icon_id <= 499U) return WEATHER_SCENE_SNOW;
-    return WEATHER_SCENE_UNKNOWN;
+    return WEATHER_SCENE_CLEAR;
 }
 
 void set_weather_strings(HomeWeatherData *weather, const HomeDemoData &demo) {

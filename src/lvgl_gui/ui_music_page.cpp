@@ -18,9 +18,9 @@ lv_obj_t *root = nullptr;
 lv_obj_t *title = nullptr;
 lv_obj_t *track = nullptr;
 lv_obj_t *lyric = nullptr;
-lv_obj_t *time_label = nullptr;
+lv_obj_t *elapsed_label = nullptr;
+lv_obj_t *duration_label = nullptr;
 lv_obj_t *body = nullptr;
-lv_obj_t *hint = nullptr;
 GuiPageDescriptor page = {};
 PlayerStatus state = {};
 View view = View::Main;
@@ -33,6 +33,7 @@ AudioSettings audio = {};
 uint8_t bars[PLAYER_SPECTRUM_BANDS] = {};
 uint8_t peaks[PLAYER_SPECTRUM_BANDS] = {};
 uint32_t last_frame = 0;
+uint32_t displayed_lyric_second = UINT32_MAX;
 
 void rect(lv_layer_t *layer, int x, int y, int w, int h, lv_color_t c, lv_opa_t opa = LV_OPA_COVER, int radius = 0) {
     lv_draw_rect_dsc_t d; lv_draw_rect_dsc_init(&d); d.bg_color = c; d.bg_opa = opa; d.radius = radius;
@@ -82,36 +83,66 @@ void draw_cb(lv_event_t *e) {
     lv_layer_t *layer = lv_event_get_layer(e); lv_area_t c; lv_obj_get_coords(root, &c); draw_main(layer, c.x1, c.y1);
 }
 
+bool set_text_if_changed(lv_obj_t *label, const char *text) {
+    if (std::strcmp(lv_label_get_text(label), text) != 0) {
+        lv_label_set_text(label, text);
+        return true;
+    }
+    return false;
+}
+
 void redraw() {
     const char *heading = view == View::Main ? "音乐" : view == View::Volume ? "音量" : view == View::Playlists ? "播放列表" : view == View::Tracks ? "曲目" : (editing ? "音频设置*" : "音频设置");
-    lv_label_set_text(title, heading);
     if (view == View::Main) {
-        lv_label_set_text(track, state.file_name[0] ? state.file_name : "暂无曲目");
-        char lyric_text[LYRICS_LINE_BUFFER_SIZE] = {}; (void)lyrics_service_get_current_line(state.elapsed_seconds, lyric_text, sizeof(lyric_text)); lv_label_set_text(lyric, lyric_text);
-        char tm[32] = {}; std::snprintf(tm, sizeof(tm), "%02lu:%02lu / %02lu:%02lu   音量 %u", static_cast<unsigned long>(state.elapsed_seconds / 60), static_cast<unsigned long>(state.elapsed_seconds % 60), static_cast<unsigned long>(state.duration_seconds / 60), static_cast<unsigned long>(state.duration_seconds % 60), state.volume); lv_label_set_text(time_label, tm); lv_label_set_text(body, "");
-    } else if (view == View::Volume) { char t[48] = {}; std::snprintf(t, sizeof(t), "音量  %u\n左右调节，中键返回", state.volume); lv_label_set_text(body, t); }
-    else if (view == View::Playlists) { char t[768] = {}; size_t n = music_library_playlist_count(); for (size_t i = 0; i < n && i < 7; ++i) { char name[96] = {}; size_t tracks = 0; (void)music_library_playlist_get(i, name, sizeof(name), &tracks); std::snprintf(t + std::strlen(t), sizeof(t) - std::strlen(t), "%c %s (%u)\n", i == playlist ? '>' : ' ', name, static_cast<unsigned>(tracks)); } lv_label_set_text(body, t); }
-    else if (view == View::Tracks) { char t[768] = {}; size_t n = 0; (void)music_library_playlist_get(playlist, nullptr, 0, &n); for (size_t i = 0; i < n && i < 7; ++i) { char name[PLAYER_NAME_LENGTH] = {}; (void)music_library_playlist_track_get(playlist, i, nullptr, nullptr, 0, name, sizeof(name)); std::snprintf(t + std::strlen(t), sizeof(t) - std::strlen(t), "%c %s\n", i == track_index ? '>' : ' ', name); } lv_label_set_text(body, t); }
-    else { char t[256] = {}; std::snprintf(t, sizeof(t), "音量 %u\n功放 %s\n低音 %d\n高音 %d\n环绕 %u\n睡眠 %u 分钟", audio.volume, audio.amplifier_enabled ? "开" : "关", audio.bass_db, audio.treble_db, audio.surround_depth, audio.sleep_timer_min); lv_label_set_text(body, t); }
-    lv_label_set_text(hint, navigation ? "左右选择，中键确认，右键长按返回" : "左右切页，中键进入"); lv_obj_invalidate(root);
+        lv_obj_add_flag(title, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(track, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(lyric, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(elapsed_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(duration_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(body, LV_OBJ_FLAG_HIDDEN);
+        const bool track_changed = set_text_if_changed(track, state.file_name[0] ? state.file_name : "暂无曲目");
+        if (track_changed || displayed_lyric_second != state.elapsed_seconds) {
+            char lyric_text[LYRICS_LINE_BUFFER_SIZE] = {};
+            (void)lyrics_service_get_current_line(state.elapsed_seconds, lyric_text, sizeof(lyric_text));
+            set_text_if_changed(lyric, lyric_text);
+            displayed_lyric_second = state.elapsed_seconds;
+        }
+        char elapsed[12] = {}; char duration[12] = {};
+        std::snprintf(elapsed, sizeof(elapsed), "%02lu:%02lu", static_cast<unsigned long>(state.elapsed_seconds / 60), static_cast<unsigned long>(state.elapsed_seconds % 60));
+        std::snprintf(duration, sizeof(duration), "%02lu:%02lu", static_cast<unsigned long>(state.duration_seconds / 60), static_cast<unsigned long>(state.duration_seconds % 60));
+        set_text_if_changed(elapsed_label, elapsed); set_text_if_changed(duration_label, duration);
+    } else {
+        lv_obj_clear_flag(title, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(track, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lyric, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(elapsed_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(duration_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(body, LV_OBJ_FLAG_HIDDEN);
+        set_text_if_changed(title, heading);
+        if (view == View::Volume) { char t[32] = {}; std::snprintf(t, sizeof(t), "音量 %u", state.volume); set_text_if_changed(body, t); }
+    else if (view == View::Playlists) { char t[768] = {}; size_t n = music_library_playlist_count(); for (size_t i = 0; i < n && i < 7; ++i) { char name[96] = {}; size_t tracks = 0; (void)music_library_playlist_get(i, name, sizeof(name), &tracks); std::snprintf(t + std::strlen(t), sizeof(t) - std::strlen(t), "%c %s (%u)\n", i == playlist ? '>' : ' ', name, static_cast<unsigned>(tracks)); } set_text_if_changed(body, t); }
+    else if (view == View::Tracks) { char t[768] = {}; size_t n = 0; (void)music_library_playlist_get(playlist, nullptr, 0, &n); for (size_t i = 0; i < n && i < 7; ++i) { char name[PLAYER_NAME_LENGTH] = {}; (void)music_library_playlist_track_get(playlist, i, nullptr, nullptr, 0, name, sizeof(name)); std::snprintf(t + std::strlen(t), sizeof(t) - std::strlen(t), "%c %s\n", i == track_index ? '>' : ' ', name); } set_text_if_changed(body, t); }
+        else { char t[192] = {}; std::snprintf(t, sizeof(t), "音量 %u\n功放 %s\n低音 %d\n高音 %d\n环绕 %u", audio.volume, audio.amplifier_enabled ? "开" : "关", audio.bass_db, audio.treble_db, audio.surround_depth); set_text_if_changed(body, t); }
+    }
 }
 
 void create_page() {
     root = lvgl_page_create(); lv_obj_add_event_cb(root, draw_cb, LV_EVENT_DRAW_MAIN, nullptr);
     title = lvgl_label(root, "音乐", 8, 4, 200, ui_heiti_font_get(18));
-    track = lvgl_label(root, "", 12, 24, 360, ui_heiti_font_get(16)); lv_obj_set_style_text_align(track, LV_TEXT_ALIGN_CENTER, 0);
-    lyric = lvgl_label(root, "", 12, 108, 360, ui_heiti_font_get(16)); lv_obj_set_style_text_align(lyric, LV_TEXT_ALIGN_CENTER, 0);
-    time_label = lvgl_label(root, "", 12, 120, 360, &lv_font_montserrat_12); lv_obj_set_style_text_align(time_label, LV_TEXT_ALIGN_CENTER, 0);
+    track = lvgl_label(root, "", 12, 0, 360, ui_heiti_font_get(16)); lv_obj_set_style_text_align(track, LV_TEXT_ALIGN_CENTER, 0);
+    lyric = lvgl_label(root, "", 76, 106, 232, ui_heiti_font_get(16)); lv_obj_set_style_text_align(lyric, LV_TEXT_ALIGN_CENTER, 0);
+    elapsed_label = lvgl_label(root, "", 12, 108, 62, &lv_font_montserrat_12); lv_obj_set_style_text_align(elapsed_label, LV_TEXT_ALIGN_LEFT, 0);
+    duration_label = lvgl_label(root, "", 310, 108, 62, &lv_font_montserrat_12); lv_obj_set_style_text_align(duration_label, LV_TEXT_ALIGN_RIGHT, 0);
     body = lvgl_label(root, "", 12, 30, 360, ui_heiti_font_get(16)); lv_label_set_long_mode(body, LV_LABEL_LONG_MODE_WRAP);
-    hint = lvgl_label(root, "", 8, 158, 368, ui_heiti_font_get(12)); page.view = root;
+    page.view = root;
 }
 
-void enter() { view = View::Main; selected = 3; navigation = editing = false; last_frame = millis(); std::memset(bars, 0, sizeof(bars)); std::memset(peaks, 0, sizeof(peaks)); lv_obj_set_style_text_font(body, ui_heiti_font_get(16), 0); redraw(); }
+void enter() { view = View::Main; selected = 3; navigation = editing = false; last_frame = millis(); displayed_lyric_second = UINT32_MAX; std::memset(bars, 0, sizeof(bars)); std::memset(peaks, 0, sizeof(peaks)); lv_obj_set_style_text_font(body, ui_heiti_font_get(16), 0); redraw(); lv_obj_invalidate(root); }
 void exit() { editing = false; }
-void navigation_changed(bool active) { navigation = active; if (!active) { view = View::Main; editing = false; } redraw(); }
+void navigation_changed(bool active) { navigation = active; if (!active) { view = View::Main; editing = false; } redraw(); lv_obj_invalidate(root); }
 void adjust_audio(int delta) { audio.volume = static_cast<uint8_t>(constrain(static_cast<int>(audio.volume) + delta, PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX)); (void)task_post_player_audio_settings(audio, false); }
 bool consume(const KeyEvent &event) {
-    if (event.id == KeyId::Middle && event.gesture == KeyGesture::LongPress && view != View::Main) { view = View::Main; editing = false; redraw(); return true; }
+    if (event.id == KeyId::Middle && event.gesture == KeyGesture::LongPress && view != View::Main) { view = View::Main; editing = false; redraw(); lv_obj_invalidate(root); return true; }
     if (event.gesture != KeyGesture::Click) return false;
     const int direction = event.id == KeyId::Left ? -1 : 1;
     if (event.id == KeyId::Left || event.id == KeyId::Right) {
@@ -119,17 +150,17 @@ bool consume(const KeyEvent &event) {
         else if (view == View::Volume) (void)task_post_player_command(PlayerCommandType::ChangeVolume, direction, true);
         else if (view == View::Playlists) { const size_t c = music_library_playlist_count(); if (c) playlist = static_cast<uint16_t>((playlist + c + direction) % c); }
         else if (view == View::Tracks) { size_t c = 0; (void)music_library_playlist_get(playlist, nullptr, 0, &c); if (c) track_index = static_cast<uint16_t>((track_index + c + direction) % c); }
-        else if (editing) adjust_audio(direction); redraw(); return true;
+        else if (editing) adjust_audio(direction); redraw(); lv_obj_invalidate(root); return true;
     }
     if (event.id != KeyId::Middle) return false;
     if (view == View::Main) { if (selected == 0) view = View::Volume; else if (selected == 1) (void)task_post_player_command(PlayerCommandType::CyclePlaybackMode, 0, true); else if (selected == 2) (void)task_post_player_command(PlayerCommandType::Previous, 0, true); else if (selected == 3) (void)task_post_player_command(PlayerCommandType::Toggle, 0, true); else if (selected == 4) (void)task_post_player_command(PlayerCommandType::Next, 0, true); else if (selected == 5) view = View::Playlists; else { view = View::Audio; audio = {state.volume, state.playback_mode, state.amplifier_enabled, state.bass_db, state.treble_db, state.surround_depth, state.sleep_timer_min}; } }
     else if (view == View::Playlists) { view = View::Tracks; track_index = 0; }
     else if (view == View::Tracks) (void)task_post_player_selection(playlist, track_index);
     else if (view == View::Audio) { if (editing) { (void)task_post_player_audio_settings(audio, true); editing = false; } else editing = true; }
-    redraw(); return true;
+    redraw(); lv_obj_invalidate(root); return true;
 }
-bool service() { const uint32_t now = millis(); if (now - last_frame >= 80U) { last_frame = now; for (uint8_t i = 0; i < PLAYER_SPECTRUM_BANDS; ++i) { const uint8_t target = state.state == PlayerState::Playing ? state.spectrum[i] : 0; bars[i] = bars[i] < target ? target : bars[i] > 20 ? bars[i] - 20 : 0; peaks[i] = bars[i] > peaks[i] ? bars[i] : peaks[i] > 3 ? peaks[i] - 3 : 0; } lv_obj_invalidate(root); } if (view == View::Main) redraw(); return false; }
-bool status_update(const PlayerStatus &incoming) { if (incoming.version == state.version) return false; state = incoming; if (root != nullptr) redraw(); return true; }
+bool service() { const uint32_t now = millis(); if (now - last_frame >= 80U) { last_frame = now; for (uint8_t i = 0; i < PLAYER_SPECTRUM_BANDS; ++i) { const uint8_t target = state.state == PlayerState::Playing ? state.spectrum[i] : 0; bars[i] = bars[i] < target ? target : bars[i] > 20 ? bars[i] - 20 : 0; peaks[i] = bars[i] > peaks[i] ? bars[i] : peaks[i] > 3 ? peaks[i] - 3 : 0; } if (view == View::Main) lv_obj_invalidate(root); } return false; }
+bool status_update(const PlayerStatus &incoming) { if (incoming.version == state.version) return false; const bool main_visual_changed = incoming.state != state.state || incoming.elapsed_seconds != state.elapsed_seconds || incoming.duration_seconds != state.duration_seconds; state = incoming; if (root != nullptr) { redraw(); if (view == View::Main && main_visual_changed) lv_obj_invalidate(root); } return true; }
 }
 
 GuiPageDescriptor &ui_music_page_descriptor() { if (page.init == nullptr) page = GuiPageDescriptor{UiPage::Music, create_page, enter, exit, consume, service, status_update, root, "music", true, false, navigation_changed}; return page; }

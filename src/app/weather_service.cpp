@@ -156,7 +156,7 @@ WeatherScene_t scene_for_icon(uint16_t icon) {
     if ((icon >= 300U && icon <= 305U) || icon == 350U || icon == 351U || icon == 399U) {
         return WEATHER_SCENE_LIGHT_RAIN;
     }
-    return WEATHER_SCENE_UNKNOWN;
+    return WEATHER_SCENE_CLEAR;
 }
 
 bool parse_date(const char *text, uint16_t *year, uint8_t *month, uint8_t *day) {

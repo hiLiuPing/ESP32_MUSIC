@@ -148,10 +148,12 @@ void rebuild_locked() {
     current_snapshot.environment = injected_environment;
     current_snapshot.battery = injected_battery;
     if (!current_snapshot.weather.valid) {
-        current_snapshot.weather.icon_id = 499;
-        current_snapshot.weather.scene = WEATHER_SCENE_UNKNOWN;
-    } else if (current_snapshot.weather.icon_id == 0) {
-        current_snapshot.weather.icon_id = 499;
+        current_snapshot.weather.icon_id = 100;
+        current_snapshot.weather.scene = WEATHER_SCENE_CLEAR;
+    } else if (current_snapshot.weather.icon_id == 0 ||
+               current_snapshot.weather.icon_id == 999U) {
+        current_snapshot.weather.icon_id = 100;
+        current_snapshot.weather.scene = WEATHER_SCENE_CLEAR;
     }
     if (current_snapshot.battery.percent > 100U) {
         current_snapshot.battery.percent = 100U;
@@ -192,8 +194,8 @@ void rebuild_locked() {
 void app_data_attach_mutex(SemaphoreHandle_t mutex) {
     snapshot_mutex = mutex;
     if (lock_snapshot(portMAX_DELAY)) {
-        injected_weather.icon_id = 499;
-        injected_weather.scene = WEATHER_SCENE_UNKNOWN;
+        injected_weather.icon_id = 100;
+        injected_weather.scene = WEATHER_SCENE_CLEAR;
         if (injected_forecast_version == 0U) injected_forecast_version = 1U;
         rebuild_locked();
         unlock_snapshot();

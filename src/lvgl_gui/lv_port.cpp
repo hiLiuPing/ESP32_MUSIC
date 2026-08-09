@@ -8,7 +8,7 @@
 namespace {
 constexpr uint16_t kDisplayWidth = 384;
 constexpr uint16_t kDisplayHeight = 168;
-constexpr uint16_t kBufferRows = 8;
+constexpr uint16_t kBufferRows = kDisplayHeight;
 constexpr size_t kBufferBytes = kDisplayWidth * kBufferRows * sizeof(uint16_t);
 
 lv_display_t *s_display = nullptr;
@@ -62,7 +62,7 @@ bool lv_port_start() {
     s_display = lv_display_create(kDisplayWidth, kDisplayHeight);
     lv_display_set_color_format(s_display, LV_COLOR_FORMAT_RGB565);
     lv_display_set_buffers(s_display, s_draw_buffer, nullptr, kBufferBytes,
-                           LV_DISPLAY_RENDER_MODE_PARTIAL);
+                           LV_DISPLAY_RENDER_MODE_FULL);
     lv_display_set_flush_cb(s_display, flush);
     bsp_display().clearDisplay();
     return true;

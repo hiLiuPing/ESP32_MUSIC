@@ -1,0 +1,67 @@
+#pragma once
+
+#include <lvgl.h>
+
+extern const lv_image_dsc_t home_camp_fire1;
+extern const lv_image_dsc_t home_camp_fire2;
+extern const lv_image_dsc_t home_camp_fire3;
+extern const lv_image_dsc_t home_camp_fire4;
+extern const lv_image_dsc_t home_camp_house;
+extern const lv_image_dsc_t home_sky_bird_01;
+extern const lv_image_dsc_t home_sky_bird_02;
+extern const lv_image_dsc_t home_sky_bird_03;
+extern const lv_image_dsc_t home_sky_bird_04;
+extern const lv_image_dsc_t home_sky_bird_05;
+extern const lv_image_dsc_t home_sky_bird_06;
+extern const lv_image_dsc_t home_sky_bird_07;
+extern const lv_image_dsc_t home_sky_bird_08;
+extern const lv_image_dsc_t home_sky_bird_09;
+extern const lv_image_dsc_t home_sky_bird_10;
+extern const lv_image_dsc_t home_sky_bird_11;
+extern const lv_image_dsc_t home_sky_bird_12;
+extern const lv_image_dsc_t home_sky_bird_13;
+extern const lv_image_dsc_t home_sky_bird_14;
+extern const lv_image_dsc_t home_sky_bird_15;
+extern const lv_image_dsc_t home_sky_bird_16;
+extern const lv_image_dsc_t home_sky_bird_17;
+extern const lv_image_dsc_t home_sky_cloud_01;
+extern const lv_image_dsc_t home_sky_cloud_02;
+extern const lv_image_dsc_t home_sky_cloud_03;
+extern const lv_image_dsc_t home_sky_cloud_04;
+extern const lv_image_dsc_t home_sky_cloud_05;
+extern const lv_image_dsc_t home_sky_cloud_06;
+extern const lv_image_dsc_t home_sky_cloud_07;
+extern const lv_image_dsc_t home_sky_cloud_08;
+extern const lv_image_dsc_t home_sky_cloud_09;
+extern const lv_image_dsc_t home_sky_cloud_10;
+extern const lv_image_dsc_t home_sky_cloud_11;
+extern const lv_image_dsc_t home_sky_cloud_12;
+extern const lv_image_dsc_t home_sky_cloud_13;
+extern const lv_image_dsc_t home_sky_cloud_14;
+extern const lv_image_dsc_t home_sky_cloud_15;
+extern const lv_image_dsc_t home_sky_cloud_16;
+extern const lv_image_dsc_t home_sky_cloud_17;
+extern const lv_image_dsc_t home_sky_cloud_18;
+extern const lv_image_dsc_t home_sky_cloud_19;
+extern const lv_image_dsc_t home_sky_cloud_20;
+extern const lv_image_dsc_t qoi_scene_bike1;
+extern const lv_image_dsc_t qoi_scene_bike2;
+extern const lv_image_dsc_t qoi_scene_bike3;
+extern const lv_image_dsc_t qoi_scene_bike4;
+extern const lv_image_dsc_t qoi_scene_grass;
+extern const lv_image_dsc_t qoi_scene_grass0;
+
+extern const lv_image_dsc_t * const lvgl_home_bikes[];
+extern const unsigned lvgl_home_bike_count;
+extern const lv_image_dsc_t * const lvgl_home_fires[];
+extern const unsigned lvgl_home_fire_count;
+extern const lv_image_dsc_t * const lvgl_home_clouds[];
+extern const unsigned lvgl_home_cloud_count;
+extern const lv_image_dsc_t * const lvgl_home_birds[];
+extern const unsigned lvgl_home_bird_count;
+extern const lv_image_dsc_t * const lvgl_home_grass_tiles[];
+extern const unsigned lvgl_home_grass_tile_count;
+extern const lv_image_dsc_t * const lvgl_home_grass_bases[];
+extern const unsigned lvgl_home_grass_base_count;
+extern const lv_image_dsc_t * const lvgl_home_house[];
+extern const unsigned lvgl_home_house_count;

@@ -8,6 +8,10 @@
 #include "gui/ui.h"
 #include "task/task_system.h"
 
+namespace {
+constexpr uint32_t GUI_LOOP_MS = 30U;
+}
+
 void gui_task(void *parameter) {
     (void)parameter;
     xEventGroupWaitBits(HardwareEventGroup, HW_EVENT_DISPLAY_READY,
@@ -49,6 +53,6 @@ void gui_task(void *parameter) {
             bsp_display().display_on(false);
             display_sleeping = true;
         }
-        xSemaphoreTake(GuiWakeSemaphore, pdMS_TO_TICKS(50));
+        xSemaphoreTake(GuiWakeSemaphore, pdMS_TO_TICKS(GUI_LOOP_MS));
     }
 }

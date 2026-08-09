@@ -15988,3 +15988,76 @@ const lv_image_dsc_t * const lvgl_weather_icons[] = {
     &lvgl_weather_999,
 };
 const unsigned lvgl_weather_icon_count = sizeof(lvgl_weather_icons) / sizeof(lvgl_weather_icons[0]);
+
+typedef struct { uint16_t id; const lv_image_dsc_t *image; } lvgl_weather_icon_entry_t;
+static const lvgl_weather_icon_entry_t lvgl_weather_icon_map[] = {
+    {100U, &lvgl_weather_100},
+    {101U, &lvgl_weather_101},
+    {102U, &lvgl_weather_102},
+    {103U, &lvgl_weather_103},
+    {104U, &lvgl_weather_104},
+    {150U, &lvgl_weather_150},
+    {153U, &lvgl_weather_153},
+    {154U, &lvgl_weather_154},
+    {300U, &lvgl_weather_300},
+    {301U, &lvgl_weather_301},
+    {302U, &lvgl_weather_302},
+    {303U, &lvgl_weather_303},
+    {304U, &lvgl_weather_304},
+    {305U, &lvgl_weather_305},
+    {306U, &lvgl_weather_306},
+    {307U, &lvgl_weather_307},
+    {308U, &lvgl_weather_308},
+    {309U, &lvgl_weather_309},
+    {310U, &lvgl_weather_310},
+    {311U, &lvgl_weather_311},
+    {312U, &lvgl_weather_312},
+    {313U, &lvgl_weather_313},
+    {314U, &lvgl_weather_314},
+    {315U, &lvgl_weather_315},
+    {316U, &lvgl_weather_316},
+    {317U, &lvgl_weather_317},
+    {318U, &lvgl_weather_318},
+    {350U, &lvgl_weather_350},
+    {351U, &lvgl_weather_351},
+    {399U, &lvgl_weather_399},
+    {400U, &lvgl_weather_400},
+    {401U, &lvgl_weather_401},
+    {402U, &lvgl_weather_402},
+    {403U, &lvgl_weather_403},
+    {404U, &lvgl_weather_404},
+    {405U, &lvgl_weather_405},
+    {406U, &lvgl_weather_406},
+    {407U, &lvgl_weather_407},
+    {408U, &lvgl_weather_408},
+    {409U, &lvgl_weather_409},
+    {410U, &lvgl_weather_410},
+    {456U, &lvgl_weather_456},
+    {457U, &lvgl_weather_457},
+    {499U, &lvgl_weather_499},
+    {500U, &lvgl_weather_500},
+    {501U, &lvgl_weather_501},
+    {502U, &lvgl_weather_502},
+    {503U, &lvgl_weather_503},
+    {504U, &lvgl_weather_504},
+    {507U, &lvgl_weather_507},
+    {508U, &lvgl_weather_508},
+    {509U, &lvgl_weather_509},
+    {510U, &lvgl_weather_510},
+    {511U, &lvgl_weather_511},
+    {512U, &lvgl_weather_512},
+    {513U, &lvgl_weather_513},
+    {514U, &lvgl_weather_514},
+    {515U, &lvgl_weather_515},
+    {900U, &lvgl_weather_900},
+    {901U, &lvgl_weather_901},
+    {999U, &lvgl_weather_999},
+};
+
+const lv_image_dsc_t *lvgl_weather_icon_get(uint16_t icon_id) {
+    if (icon_id == 999U) return &lvgl_weather_100;
+    for (uint32_t i = 0U; i < sizeof(lvgl_weather_icon_map) / sizeof(lvgl_weather_icon_map[0]); ++i) {
+        if (lvgl_weather_icon_map[i].id == icon_id) return lvgl_weather_icon_map[i].image;
+    }
+    return &lvgl_weather_100;
+}

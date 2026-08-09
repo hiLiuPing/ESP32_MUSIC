@@ -71,7 +71,17 @@ def main() -> None:
         body += emit_asset(source, symbol, args.mode) + "\n"
     body += "const lv_image_dsc_t * const lvgl_weather_icons[] = {\n"
     body += "".join(f"    &{symbol},\n" for symbol in symbols)
-    body += "};\nconst unsigned lvgl_weather_icon_count = sizeof(lvgl_weather_icons) / sizeof(lvgl_weather_icons[0]);\n"
+    body += "};\nconst unsigned lvgl_weather_icon_count = sizeof(lvgl_weather_icons) / sizeof(lvgl_weather_icons[0]);\n\n"
+    ids = [int(source.stem) for source in files if source.stem.isdigit()]
+    body += "typedef struct { uint16_t id; const lv_image_dsc_t *image; } lvgl_weather_icon_entry_t;\n"
+    body += "static const lvgl_weather_icon_entry_t lvgl_weather_icon_map[] = {\n"
+    body += "".join(f"    {{{icon_id}U, &{symbol}}},\n" for icon_id, symbol in zip(ids, symbols))
+    body += "};\n\nconst lv_image_dsc_t *lvgl_weather_icon_get(uint16_t icon_id) {\n"
+    body += "    if (icon_id == 999U) return &lvgl_weather_100;\n"
+    body += "    for (uint32_t i = 0U; i < sizeof(lvgl_weather_icon_map) / sizeof(lvgl_weather_icon_map[0]); ++i) {\n"
+    body += "        if (lvgl_weather_icon_map[i].id == icon_id) return lvgl_weather_icon_map[i].image;\n"
+    body += "    }\n"
+    body += "    return &lvgl_weather_100;\n}\n"
     if args.check:
         if not args.output.exists() or args.output.read_text(encoding="utf-8") != body:
             raise SystemExit("LVGL resource output is stale; rerun the generator")

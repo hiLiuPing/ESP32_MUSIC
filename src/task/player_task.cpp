@@ -22,6 +22,7 @@ constexpr size_t FFT_SIZE = 256;
 constexpr int AUDIO_PSRAM_BUFFER_BYTES = 512 * 1024;
 constexpr uint32_t SPECTRUM_INTERVAL_MS = 80;
 constexpr uint32_t STATUS_INTERVAL_MS = 100;
+constexpr uint32_t PLAYER_DIAGNOSTIC_INTERVAL_MS = 30000;
 constexpr uint32_t WEATHER_RECOVERY_GRACE_MS = 15000;
 constexpr float SPECTRUM_MIN_HZ = 80.0F;
 constexpr float SPECTRUM_MAX_HZ = 16000.0F;
@@ -44,14 +45,18 @@ uint32_t weather_recovery_file_pos = 0U;
 uint32_t last_sleep_timer_ms = 0U;
 TickType_t last_status_tick = 0;
 TickType_t last_spectrum_tick = 0;
+uint32_t last_diagnostic_ms = 0U;
 
 alignas(16) float fft_data[FFT_SIZE * 2] = {};
 alignas(16) float fft_table[FFT_SIZE] = {};
 float fft_window[FFT_SIZE] = {};
+int16_t spectrum_samples[FFT_SIZE] = {};
 uint16_t band_start[PLAYER_SPECTRUM_BANDS] = {};
 uint16_t band_end[PLAYER_SPECTRUM_BANDS] = {};
 uint32_t mapped_sample_rate = 0;
+uint32_t spectrum_sample_rate = 0U;
 bool spectrum_ready = false;
+bool spectrum_frame_pending = false;
 
 uint16_t shuffle_order[PLAYER_MAX_TRACKS] = {};
 uint16_t shuffle_count = 0;
@@ -266,6 +271,22 @@ void apply_audio_settings(const AudioSettings &requested, bool persist,
 
 void clear_spectrum() {
     std::memset(status.spectrum, 0, sizeof(status.spectrum));
+    spectrum_frame_pending = false;
+}
+
+void log_playback_diagnostics() {
+    const uint32_t now = millis();
+    if (static_cast<uint32_t>(now - last_diagnostic_ms) < PLAYER_DIAGNOSTIC_INTERVAL_MS) {
+        return;
+    }
+    last_diagnostic_ms = now;
+    constexpr uint32_t internal_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    constexpr uint32_t psram_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    Serial.printf("[PLAYER] health stack_free=%u internal_free=%u psram_free=%u psram_largest=%u\n",
+                  static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
+                  static_cast<unsigned>(heap_caps_get_free_size(internal_caps)),
+                  static_cast<unsigned>(heap_caps_get_free_size(psram_caps)),
+                  static_cast<unsigned>(heap_caps_get_largest_free_block(psram_caps)));
 }
 
 void publish(bool force) {
@@ -319,7 +340,7 @@ void rebuild_band_map(uint32_t sample_rate) {
     }
 }
 
-void analyze_pcm(int16_t *buffer, uint16_t frame_count) {
+void capture_spectrum_samples(const int16_t *buffer, uint16_t frame_count) {
     if (!spectrum_ready || buffer == nullptr || frame_count < FFT_SIZE ||
         status.state != PlayerState::Playing) {
         return;
@@ -331,10 +352,8 @@ void analyze_pcm(int16_t *buffer, uint16_t frame_count) {
     }
     last_spectrum_tick = now;
 
-    const uint8_t channels = std::max<uint8_t>(1, audio.getChannels());
-    const uint32_t sample_rate = audio.getSampleRate();
-    rebuild_band_map(sample_rate);
-    if (mapped_sample_rate == 0) {
+    const uint8_t channels = audio.getChannels();
+    if (channels == 0U || channels > 2U) {
         return;
     }
 
@@ -343,7 +362,24 @@ void analyze_pcm(int16_t *buffer, uint16_t frame_count) {
         if (channels > 1) {
             mono = (mono + buffer[index * channels + 1]) / 2;
         }
-        fft_data[index * 2] = (static_cast<float>(mono) / 32768.0F) *
+        spectrum_samples[index] = static_cast<int16_t>(mono);
+    }
+    spectrum_sample_rate = audio.getSampleRate();
+    spectrum_frame_pending = spectrum_sample_rate != 0U;
+}
+
+void process_spectrum_frame() {
+    if (!spectrum_frame_pending || status.state != PlayerState::Playing) {
+        return;
+    }
+    spectrum_frame_pending = false;
+    rebuild_band_map(spectrum_sample_rate);
+    if (mapped_sample_rate == 0U) {
+        return;
+    }
+
+    for (size_t index = 0; index < FFT_SIZE; ++index) {
+        fft_data[index * 2] = (static_cast<float>(spectrum_samples[index]) / 32768.0F) *
                               fft_window[index];
         fft_data[index * 2 + 1] = 0.0F;
     }
@@ -822,7 +858,7 @@ void audio_process_extern(int16_t *buffer, uint16_t length, bool *continue_i2s) 
     if (continue_i2s != nullptr) {
         *continue_i2s = true;
     }
-    analyze_pcm(buffer, length);
+    capture_spectrum_samples(buffer, length);
 }
 
 void audio_eof_mp3(const char *info) {
@@ -887,6 +923,7 @@ void player_task(void *parameter) {
 
         if (status.state == PlayerState::Playing) {
             audio.loop();
+            process_spectrum_frame();
             if (eof_received) {
                 eof_received = false;
                 track_started = false;
@@ -928,6 +965,7 @@ void player_task(void *parameter) {
         }
         if (status.state == PlayerState::Playing) {
             publish(false);
+            log_playback_diagnostics();
         }
         vTaskDelay(status.state == PlayerState::Playing ? 1 : pdMS_TO_TICKS(10));
     }
