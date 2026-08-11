@@ -23,10 +23,11 @@ constexpr uint8_t CONTROL_SETTINGS = 6;
 constexpr uint8_t AUDIO_ITEM_COUNT = 6;
 constexpr uint8_t AUDIO_ITEM_SLEEP_TIMER = 5;
 constexpr uint8_t PLAYLIST_ROWS = 7;
-constexpr uint32_t SPECTRUM_FRAME_MS = 80;
+constexpr uint32_t SPECTRUM_FRAME_MS = 33;
 constexpr uint8_t SPECTRUM_PEAK_HOLD_FRAMES = 2;
-constexpr int16_t SPECTRUM_BAR_WIDTH = 10;
-constexpr int16_t SPECTRUM_BAR_GAP = 5;
+constexpr int16_t SPECTRUM_BAR_LEFT = 18;
+constexpr int16_t SPECTRUM_BAR_WIDTH = 8;
+constexpr int16_t SPECTRUM_BAR_GAP = 3;
 constexpr int16_t SPECTRUM_BOTTOM = 86;
 constexpr int16_t SPECTRUM_HEIGHT = 61;
 constexpr int16_t SPECTRUM_PEAK_HEIGHT = 2;
@@ -307,7 +308,7 @@ void draw_main(egui_canvas_t *canvas) {
             for (size_t index = 0; index < PLAYER_SPECTRUM_BANDS; ++index) {
                 const int16_t height = spectrum_pixel_height(displayed_spectrum[index]);
                 const int16_t x = static_cast<int16_t>(
-                    14 + index * (SPECTRUM_BAR_WIDTH + SPECTRUM_BAR_GAP));
+                    SPECTRUM_BAR_LEFT + index * (SPECTRUM_BAR_WIDTH + SPECTRUM_BAR_GAP));
                 if (height > 0) {
                     egui_canvas_draw_rectangle_fill(canvas, x, SPECTRUM_BOTTOM - height,
                                                     SPECTRUM_BAR_WIDTH, height,
@@ -939,13 +940,7 @@ bool service() {
                                    ? player_status.spectrum[index]
                                    : 0;
         const uint8_t old_value = displayed_spectrum[index];
-        if (old_value < target) {
-            displayed_spectrum[index] = target;
-        } else if (old_value > target) {
-            displayed_spectrum[index] = old_value > 24
-                                            ? old_value - 24
-                                            : 0;
-        }
+        displayed_spectrum[index] = target;
         const uint8_t old_peak = spectrum_peaks[index];
         const uint8_t height = spectrum_pixel_height(displayed_spectrum[index]);
         if (height >= spectrum_peaks[index]) {

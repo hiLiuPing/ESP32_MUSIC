@@ -18,17 +18,22 @@
 #include "task/task_system.h"
 
 namespace {
-constexpr size_t FFT_SIZE = 256;
+constexpr size_t FFT_SIZE = 1024;
 constexpr int AUDIO_PSRAM_BUFFER_BYTES = 512 * 1024;
-constexpr uint32_t SPECTRUM_INTERVAL_MS = 80;
+constexpr uint32_t SPECTRUM_INTERVAL_MS = 33;
 constexpr uint32_t STATUS_INTERVAL_MS = 100;
+constexpr uint32_t PLAYING_STATUS_INTERVAL_MS = 33;
 constexpr uint32_t WEATHER_RECOVERY_GRACE_MS = 15000;
 constexpr uint32_t VOLUME_FADE_OUT_MS = 150;
 constexpr uint32_t VOLUME_FADE_IN_MS = 400;
 constexpr float SPECTRUM_MIN_HZ = 80.0F;
 constexpr float SPECTRUM_MAX_HZ = 16000.0F;
-constexpr float SPECTRUM_MIN_DB = -72.0F;
-constexpr float SPECTRUM_MAX_DB = -12.0F;
+constexpr float SPECTRUM_PEAK_DECAY = 0.94F;
+constexpr float SPECTRUM_MIN_PEAK = 1.0e-6F;
+constexpr float SPECTRUM_ENERGY_EPS = 1.0e-12F;
+constexpr float SPECTRUM_LOG_GAIN = 2048.0F;
+constexpr float SPECTRUM_SILENCE_RMS = 1.0e-5F;
+constexpr uint8_t SPECTRUM_RELEASE_PER_FRAME = 12U;
 
 Audio audio;
 volatile bool eof_received = false;
@@ -83,9 +88,13 @@ uint8_t output_volume = 0U;
 alignas(16) float fft_data[FFT_SIZE * 2] = {};
 alignas(16) float fft_table[FFT_SIZE] = {};
 float fft_window[FFT_SIZE] = {};
+int16_t spectrum_samples[FFT_SIZE] = {};
 uint16_t band_start[PLAYER_SPECTRUM_BANDS] = {};
 uint16_t band_end[PLAYER_SPECTRUM_BANDS] = {};
+size_t spectrum_write_index = 0U;
+size_t spectrum_sample_count = 0U;
 uint32_t mapped_sample_rate = 0;
+float spectrum_peak_level = SPECTRUM_MIN_PEAK;
 bool spectrum_ready = false;
 
 uint16_t shuffle_order[PLAYER_MAX_TRACKS] = {};
@@ -372,11 +381,19 @@ void apply_audio_settings(const AudioSettings &requested, bool persist,
 
 void clear_spectrum() {
     std::memset(status.spectrum, 0, sizeof(status.spectrum));
+    std::memset(spectrum_samples, 0, sizeof(spectrum_samples));
+    spectrum_write_index = 0U;
+    spectrum_sample_count = 0U;
+    spectrum_peak_level = SPECTRUM_MIN_PEAK;
+    last_spectrum_tick = 0;
 }
 
 void publish(bool force) {
     const TickType_t now = xTaskGetTickCount();
-    if (!force && ((now - last_status_tick) < pdMS_TO_TICKS(STATUS_INTERVAL_MS))) {
+    const uint32_t interval_ms = status.state == PlayerState::Playing
+                                     ? PLAYING_STATUS_INTERVAL_MS
+                                     : STATUS_INTERVAL_MS;
+    if (!force && ((now - last_status_tick) < pdMS_TO_TICKS(interval_ms))) {
         return;
     }
     last_status_tick = now;
@@ -408,34 +425,105 @@ void rebuild_band_map(uint32_t sample_rate) {
     mapped_sample_rate = sample_rate;
     const float nyquist = sample_rate * 0.5F;
     const float max_frequency = std::min(SPECTRUM_MAX_HZ, nyquist);
-    const float ratio = std::pow(max_frequency / SPECTRUM_MIN_HZ,
-                                 1.0F / PLAYER_SPECTRUM_BANDS);
     const float bin_width = static_cast<float>(sample_rate) / FFT_SIZE;
+    const uint16_t first_bin = std::max<uint16_t>(
+        1U, std::min<uint16_t>(static_cast<uint16_t>(
+                                     std::ceil(SPECTRUM_MIN_HZ / bin_width)),
+                                 FFT_SIZE / 2U - PLAYER_SPECTRUM_BANDS));
+    const uint16_t end_bin = std::max<uint16_t>(
+        static_cast<uint16_t>(first_bin + PLAYER_SPECTRUM_BANDS),
+        std::min<uint16_t>(static_cast<uint16_t>(
+                               std::ceil(max_frequency / bin_width)),
+                           FFT_SIZE / 2U));
+    const uint16_t bin_count = static_cast<uint16_t>(end_bin - first_bin);
 
     for (size_t band = 0; band < PLAYER_SPECTRUM_BANDS; ++band) {
-        const float low = SPECTRUM_MIN_HZ * std::pow(ratio, band);
-        const float high = SPECTRUM_MIN_HZ * std::pow(ratio, band + 1);
-        uint16_t start = static_cast<uint16_t>(std::ceil(low / bin_width));
-        uint16_t end = static_cast<uint16_t>(std::ceil(high / bin_width));
-        start = std::max<uint16_t>(1, std::min<uint16_t>(start, FFT_SIZE / 2 - 1));
-        end = std::max<uint16_t>(static_cast<uint16_t>(start + 1), end);
-        end = std::min<uint16_t>(end, FFT_SIZE / 2);
-        band_start[band] = start;
-        band_end[band] = end;
+        band_start[band] = static_cast<uint16_t>(
+            first_bin + (band * bin_count) / PLAYER_SPECTRUM_BANDS);
+        band_end[band] = static_cast<uint16_t>(
+            first_bin + ((band + 1U) * bin_count) / PLAYER_SPECTRUM_BANDS);
+    }
+
+    clear_spectrum();
+    mapped_sample_rate = sample_rate;
+}
+
+void update_spectrum_levels(const float raw_levels[PLAYER_SPECTRUM_BANDS],
+                            float frame_peak) {
+    if (frame_peak > spectrum_peak_level) {
+        spectrum_peak_level = frame_peak;
+    } else {
+        spectrum_peak_level = std::max(frame_peak,
+                                       spectrum_peak_level * SPECTRUM_PEAK_DECAY);
+    }
+    spectrum_peak_level = std::max(spectrum_peak_level, SPECTRUM_MIN_PEAK);
+
+    for (size_t band = 0; band < PLAYER_SPECTRUM_BANDS; ++band) {
+        const float normalized = std::max(
+            0.0F, std::min(raw_levels[band] / spectrum_peak_level, 1.0F));
+        const uint8_t target = static_cast<uint8_t>(
+            std::max(0, std::min(static_cast<int>(normalized * 255.0F + 0.5F), 255)));
+        const uint8_t current = status.spectrum[band];
+        if (target >= current) {
+            status.spectrum[band] = target;
+        } else {
+            const uint8_t released = current > SPECTRUM_RELEASE_PER_FRAME
+                                         ? current - SPECTRUM_RELEASE_PER_FRAME
+                                         : 0U;
+            status.spectrum[band] = std::max(target, released);
+        }
     }
 }
 
-void analyze_pcm(int16_t *buffer, uint16_t frame_count) {
-    if (!spectrum_ready || buffer == nullptr || frame_count < FFT_SIZE ||
-        status.state != PlayerState::Playing) {
+void analyze_spectrum_frame() {
+    float mean = 0.0F;
+    for (size_t index = 0; index < FFT_SIZE; ++index) {
+        const size_t sample_index = (spectrum_write_index + index) % FFT_SIZE;
+        mean += static_cast<float>(spectrum_samples[sample_index]) / 32768.0F;
+    }
+    mean /= FFT_SIZE;
+
+    float rms_sum = 0.0F;
+    for (size_t index = 0; index < FFT_SIZE; ++index) {
+        const size_t sample_index = (spectrum_write_index + index) % FFT_SIZE;
+        const float centered =
+            static_cast<float>(spectrum_samples[sample_index]) / 32768.0F - mean;
+        rms_sum += centered * centered;
+        fft_data[index * 2U] = centered * fft_window[index];
+        fft_data[index * 2U + 1U] = 0.0F;
+    }
+
+    float raw_levels[PLAYER_SPECTRUM_BANDS] = {};
+    const float rms = std::sqrt(rms_sum / FFT_SIZE);
+    if (rms >= SPECTRUM_SILENCE_RMS &&
+        dsps_fft2r_fc32(fft_data, FFT_SIZE) == ESP_OK &&
+        dsps_bit_rev_fc32(fft_data, FFT_SIZE) == ESP_OK) {
+        float frame_peak = 0.0F;
+        for (size_t band = 0; band < PLAYER_SPECTRUM_BANDS; ++band) {
+            float energy = 0.0F;
+            const uint16_t count = static_cast<uint16_t>(band_end[band] - band_start[band]);
+            for (uint16_t bin = band_start[band]; bin < band_end[band]; ++bin) {
+                const float real = fft_data[bin * 2U];
+                const float imaginary = fft_data[bin * 2U + 1U];
+                energy += real * real + imaginary * imaginary;
+            }
+            raw_levels[band] = 20.0F * std::log10(
+                1.0F + std::sqrt(energy / count + SPECTRUM_ENERGY_EPS) *
+                            SPECTRUM_LOG_GAIN);
+            frame_peak = std::max(frame_peak, raw_levels[band]);
+        }
+        update_spectrum_levels(raw_levels, frame_peak);
         return;
     }
 
-    const TickType_t now = xTaskGetTickCount();
-    if ((now - last_spectrum_tick) < pdMS_TO_TICKS(SPECTRUM_INTERVAL_MS)) {
+    update_spectrum_levels(raw_levels, 0.0F);
+}
+
+void analyze_pcm(int16_t *buffer, uint16_t frame_count) {
+    if (!spectrum_ready || buffer == nullptr || frame_count == 0U ||
+        status.state != PlayerState::Playing) {
         return;
     }
-    last_spectrum_tick = now;
 
     const uint8_t channels = std::max<uint8_t>(1, audio.getChannels());
     const uint32_t sample_rate = audio.getSampleRate();
@@ -444,38 +532,23 @@ void analyze_pcm(int16_t *buffer, uint16_t frame_count) {
         return;
     }
 
-    for (size_t index = 0; index < FFT_SIZE; ++index) {
+    for (size_t index = 0; index < frame_count; ++index) {
         int32_t mono = buffer[index * channels];
         if (channels > 1) {
             mono = (mono + buffer[index * channels + 1]) / 2;
         }
-        fft_data[index * 2] = (static_cast<float>(mono) / 32768.0F) *
-                              fft_window[index];
-        fft_data[index * 2 + 1] = 0.0F;
+        spectrum_samples[spectrum_write_index] = static_cast<int16_t>(mono);
+        spectrum_write_index = (spectrum_write_index + 1U) % FFT_SIZE;
+        spectrum_sample_count = std::min(spectrum_sample_count + 1U, FFT_SIZE);
     }
 
-    if (dsps_fft2r_fc32(fft_data, FFT_SIZE) != ESP_OK ||
-        dsps_bit_rev_fc32(fft_data, FFT_SIZE) != ESP_OK) {
+    const TickType_t now = xTaskGetTickCount();
+    if (spectrum_sample_count < FFT_SIZE ||
+        (now - last_spectrum_tick) < pdMS_TO_TICKS(SPECTRUM_INTERVAL_MS)) {
         return;
     }
-
-    constexpr float fft_scale = FFT_SIZE * 0.25F;
-    constexpr float fft_scale_squared = fft_scale * fft_scale;
-    constexpr float db_span = SPECTRUM_MAX_DB - SPECTRUM_MIN_DB;
-    for (size_t band = 0; band < PLAYER_SPECTRUM_BANDS; ++band) {
-        float peak_power = 0.0F;
-        for (uint16_t bin = band_start[band]; bin < band_end[band]; ++bin) {
-            const float real = fft_data[bin * 2];
-            const float imaginary = fft_data[bin * 2 + 1];
-            peak_power = std::max(peak_power,
-                                  real * real + imaginary * imaginary);
-        }
-        const float db = 10.0F *
-                         std::log10(peak_power / fft_scale_squared + 1.0e-18F);
-        const float normalized = (db - SPECTRUM_MIN_DB) / db_span;
-        status.spectrum[band] = static_cast<uint8_t>(
-            constrain(static_cast<int>(normalized * 255.0F), 0, 255));
-    }
+    last_spectrum_tick = now;
+    analyze_spectrum_frame();
 }
 
 void build_shuffle(uint16_t current_index) {

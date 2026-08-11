@@ -321,7 +321,8 @@ bool ui_poetry_cache_service() {
 }
 
 const UiPoetryCacheSlot *ui_poetry_cache_select(PoetryCollection collection) {
-    if (!batch_ready()) return nullptr;
+    // A prepared entry is safe to display while the rest of the pool warms up.
+    if (slots == nullptr) return nullptr;
     const uint8_t ci = static_cast<uint8_t>(collection);
     if (ci >= sizeof(selection_cursor)) return nullptr;
     for (uint8_t offset = 0U; offset < UI_POETRY_CACHE_SLOT_COUNT; ++offset) {
@@ -352,7 +353,7 @@ void ui_poetry_cache_release(const UiPoetryCacheSlot *slot) {
 
 size_t ui_poetry_cache_ready_count(PoetryCollection collection) {
     size_t count = 0U;
-    if (!batch_ready()) return count;
+    if (slots == nullptr) return count;
     for (uint8_t i = 0U; i < UI_POETRY_CACHE_SLOT_COUNT; ++i) {
         if (slots[i].valid && !slots[i].in_use && !slots[i].consumed &&
             slots[i].collection == collection) ++count;
