@@ -2,6 +2,7 @@
 
 #include <LittleFS.h>
 #include <Arduino.h>
+#include <cstdint>
 #include <cstring>
 #include <esp_heap_caps.h>
 
@@ -18,6 +19,7 @@ constexpr uint8_t SPARSE_TINY = 3U;
 constexpr uint32_t FONT_OPEN_RETRY_MS = 200U;
 constexpr uint8_t GLYPH_CACHE_SLOTS = 32U;
 constexpr uint16_t GLYPH_CACHE_BITMAP_SIZE = 256U;
+constexpr uint16_t POETRY_HASH_EMPTY = 0U;
 
 struct CmapEntry {
     uint32_t data_offset;
@@ -86,6 +88,9 @@ GlyphCacheEntry *poetry_glyph_cache = nullptr;
 size_t poetry_glyph_capacity = 0U;
 size_t poetry_glyph_count = 0U;
 size_t poetry_glyph_bytes = 0U;
+uint16_t *poetry_glyph_index = nullptr;
+size_t poetry_glyph_index_capacity = 0U;
+uint32_t poetry_glyph_hash_probes = 0U;
 uint32_t storage_read_count = 0U;
 
 int font_draw(const egui_font_t *, egui_canvas_t *, const void *, egui_dim_t, egui_dim_t, egui_color_t, egui_alpha_t);
@@ -470,12 +475,63 @@ egui_alpha_t alpha_from_value(uint8_t value, uint8_t bpp) {
     return static_cast<egui_alpha_t>((static_cast<uint16_t>(value) * EGUI_ALPHA_100 + max_value / 2U) / max_value);
 }
 
+size_t poetry_hash_slot(const FontContext &ctx, uint32_t cp) {
+    uintptr_t key = reinterpret_cast<uintptr_t>(&ctx);
+    key ^= static_cast<uintptr_t>(cp) + static_cast<uintptr_t>(0x9E3779B9U) +
+           (key << 6U) + (key >> 2U);
+    key ^= key >> 16U;
+    return static_cast<size_t>(key) & (poetry_glyph_index_capacity - 1U);
+}
+
 GlyphCacheEntry *find_poetry_cached_glyph(FontContext &ctx, uint32_t cp) {
-    for (size_t i = 0U; i < poetry_glyph_count; ++i) {
-        GlyphCacheEntry &entry = poetry_glyph_cache[i];
+    if (poetry_glyph_cache == nullptr || poetry_glyph_index == nullptr ||
+        poetry_glyph_index_capacity == 0U) {
+        return nullptr;
+    }
+
+    size_t slot = poetry_hash_slot(ctx, cp);
+    for (size_t probe = 0U; probe < poetry_glyph_index_capacity; ++probe) {
+        ++poetry_glyph_hash_probes;
+        const uint16_t stored = poetry_glyph_index[slot];
+        if (stored == POETRY_HASH_EMPTY) return nullptr;
+        GlyphCacheEntry &entry = poetry_glyph_cache[static_cast<size_t>(stored - 1U)];
         if (entry.valid && entry.font == &ctx && entry.cp == cp) return &entry;
+        slot = (slot + 1U) & (poetry_glyph_index_capacity - 1U);
     }
     return nullptr;
+}
+
+bool insert_poetry_cached_glyph(size_t entry_index) {
+    if (poetry_glyph_cache == nullptr || poetry_glyph_index == nullptr ||
+        entry_index >= poetry_glyph_count + 1U || entry_index >= 0xFFFFU) {
+        return false;
+    }
+
+    GlyphCacheEntry &entry = poetry_glyph_cache[entry_index];
+    size_t slot = poetry_hash_slot(*entry.font, entry.cp);
+    for (size_t probe = 0U; probe < poetry_glyph_index_capacity; ++probe) {
+        const uint16_t stored = poetry_glyph_index[slot];
+        if (stored == POETRY_HASH_EMPTY) {
+            poetry_glyph_index[slot] = static_cast<uint16_t>(entry_index + 1U);
+            return true;
+        }
+        GlyphCacheEntry &existing = poetry_glyph_cache[static_cast<size_t>(stored - 1U)];
+        if (existing.valid && existing.font == entry.font && existing.cp == entry.cp) {
+            return true;
+        }
+        slot = (slot + 1U) & (poetry_glyph_index_capacity - 1U);
+    }
+    return false;
+}
+
+bool commit_poetry_cached_glyph() {
+    const size_t entry_index = poetry_glyph_count;
+    if (!insert_poetry_cached_glyph(entry_index)) {
+        poetry_glyph_cache[entry_index] = {};
+        return false;
+    }
+    ++poetry_glyph_count;
+    return true;
 }
 
 GlyphCacheEntry *find_regular_cached_glyph(FontContext &ctx, uint32_t cp) {
@@ -502,8 +558,7 @@ bool cache_poetry_glyph(FontContext &ctx, uint32_t cp) {
     if (regular != nullptr) {
         *destination = *regular;
         destination->age = 0U;
-        ++poetry_glyph_count;
-        return true;
+        return commit_poetry_cached_glyph();
     }
 
     uint32_t glyph = 0U;
@@ -514,10 +569,9 @@ bool cache_poetry_glyph(FontContext &ctx, uint32_t cp) {
         destination->age = 0U;
         destination->valid = true;
         destination->missing = true;
-        ++poetry_glyph_count;
         Serial.printf("[FONT_CACHE] missing U+%04lX, using '-'\n",
                       static_cast<unsigned long>(cp));
-        return true;
+        return commit_poetry_cached_glyph();
     }
     GlyphDsc dsc = {};
     uint8_t bitmap[MAX_GLYPH_RAW] = {};
@@ -534,8 +588,7 @@ bool cache_poetry_glyph(FontContext &ctx, uint32_t cp) {
     destination->valid = true;
     destination->missing = false;
     if (bitmap_bytes != 0U) std::memcpy(destination->bitmap, bitmap, bitmap_bytes);
-    ++poetry_glyph_count;
-    return true;
+    return commit_poetry_cached_glyph();
 }
 
 GlyphCacheEntry *allocate_glyph_cache() {
@@ -842,18 +895,32 @@ bool ui_heiti_font_warm_text(uint8_t size, const char *text) {
 }
 
 bool ui_heiti_font_poetry_cache_init(size_t max_bytes) {
-    if (poetry_glyph_cache != nullptr) return true;
+    if (poetry_glyph_cache != nullptr) return poetry_glyph_index != nullptr;
     const size_t capacity = max_bytes / sizeof(GlyphCacheEntry);
-    if (capacity == 0U || !psramFound()) return false;
+    if (capacity == 0U || capacity >= 0xFFFFU || !psramFound()) return false;
+    size_t index_capacity = 1U;
+    while (index_capacity < capacity * 2U) index_capacity <<= 1U;
     const size_t bytes = capacity * sizeof(GlyphCacheEntry);
-    poetry_glyph_cache = static_cast<GlyphCacheEntry *>(
+    GlyphCacheEntry *cache = static_cast<GlyphCacheEntry *>(
         heap_caps_calloc(capacity, sizeof(GlyphCacheEntry),
                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (poetry_glyph_cache == nullptr) return false;
+    if (cache == nullptr) return false;
+    uint16_t *index = static_cast<uint16_t *>(
+        heap_caps_calloc(index_capacity, sizeof(uint16_t),
+                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (index == nullptr) {
+        heap_caps_free(cache);
+        return false;
+    }
+    poetry_glyph_cache = cache;
+    poetry_glyph_index = index;
     poetry_glyph_capacity = capacity;
     poetry_glyph_bytes = bytes;
-    Serial.printf("[POETRY_CACHE] glyph pool=%u bytes, capacity=%u\n",
-                  static_cast<unsigned>(bytes), static_cast<unsigned>(capacity));
+    poetry_glyph_index_capacity = index_capacity;
+    poetry_glyph_hash_probes = 0U;
+    Serial.printf("[POETRY_CACHE] glyph pool=%u bytes, capacity=%u index=%u bytes\n",
+                  static_cast<unsigned>(bytes), static_cast<unsigned>(capacity),
+                  static_cast<unsigned>(index_capacity * sizeof(uint16_t)));
     for (FontContext &ctx : contexts) {
         if (ctx.requested_size <= 18U) (void)open_context(ctx);
     }
@@ -898,3 +965,10 @@ bool ui_heiti_font_text_is_cached(uint8_t size, const char *text) {
 size_t ui_heiti_font_poetry_cache_bytes() { return poetry_glyph_bytes; }
 size_t ui_heiti_font_poetry_cache_glyphs() { return poetry_glyph_count; }
 uint32_t ui_heiti_font_storage_read_count() { return storage_read_count; }
+void ui_heiti_font_log_cache_stats(uint32_t poll_ms) {
+    Serial.printf("[GUI] poll=%lums poetry_glyphs=%u hash_probes=%lu\n",
+                  static_cast<unsigned long>(poll_ms),
+                  static_cast<unsigned>(poetry_glyph_count),
+                  static_cast<unsigned long>(poetry_glyph_hash_probes));
+    poetry_glyph_hash_probes = 0U;
+}

@@ -151,6 +151,20 @@ typedef struct
     uint8_t resume_pending;
 } ui_home_battery_state_t;
 
+typedef struct
+{
+    char source[sizeof(((DataApp_HomeStatus_t *)0)->date_text)];
+    char month_text[3];
+    char day_text[3];
+    char ascii_text[6];
+    egui_dim_t month_width;
+    egui_dim_t month_marker_width;
+    egui_dim_t day_width;
+    const egui_font_t *heiti_font;
+    uint8_t heiti_ready;
+    uint8_t valid;
+} ui_home_date_layout_t;
+
 static ui_home_page_t s_home_page;
 static egui_view_api_t s_home_api;
 
@@ -167,6 +181,7 @@ static ui_home_scene_state_t s_home_scene_state;
 static ui_home_sky_state_t s_home_sky_state;
 static ui_home_weather_state_t s_home_weather_state;
 static ui_home_battery_state_t s_home_battery_state;
+static ui_home_date_layout_t s_home_date_layout;
 static ui_home_particle_t s_home_particles[30];
 static DataApp_HomeStatus_t s_home_render_status;
 static ui_home_style_t s_home_render_style;
@@ -190,6 +205,7 @@ static uint32_t ui_HomePage_mono_rgb(uint32_t rgb);
 static uint32_t ui_HomePage_foreground_on_sky_rgb(void);
 static uint32_t ui_HomePage_foreground_on_ground_rgb(void);
 static void ui_HomePage_update_render_snapshot(const DataApp_HomeStatus_t *status);
+static void ui_HomePage_update_date_layout(void);
 static uint8_t ui_HomePage_battery_update(const DataApp_HomeStatus_t *status, uint32_t now, uint8_t restart);
 static uint8_t ui_HomePage_warm_date_font(void);
 static void ui_HomePage_draw_battery(egui_canvas_t *canvas,
@@ -1301,6 +1317,7 @@ void ui_HomePage_screen_init(void)
     s_home_battery_state.visible = 1U;
     s_home_heiti_16 = NULL;
     s_home_heiti_16_ready = ui_HomePage_warm_date_font();
+    memset(&s_home_date_layout, 0, sizeof(s_home_date_layout));
     DataApp_HomeStatus_Get(&status);
     ui_HomePage_update_render_snapshot(&status);
     (void)ui_HomePage_battery_update(&status, s_home_scene_tick, 1U);
@@ -1449,6 +1466,7 @@ static void ui_HomePage_timer_cb(egui_timer_t *timer)
         if (heiti_ready != s_home_heiti_16_ready)
         {
             s_home_heiti_16_ready = heiti_ready;
+            ui_HomePage_update_date_layout();
             refresh_status = 1U;
         }
     }
@@ -1698,6 +1716,7 @@ static void ui_HomePage_update_render_snapshot(const DataApp_HomeStatus_t *statu
     s_home_render_status = *status;
     s_home_render_scene = ui_HomePage_normalize_scene(status->weather_scene);
     s_home_render_style = ui_HomePage_get_style(s_home_render_scene, status->is_day);
+    ui_HomePage_update_date_layout();
 }
 
 static uint16_t ui_HomePage_star_progress(const ui_home_particle_t *particle)
@@ -1894,18 +1913,17 @@ static void ui_HomePage_draw_raw_text(egui_canvas_t *canvas,
     }
 }
 
-static egui_dim_t ui_HomePage_draw_text_advance(egui_canvas_t *canvas,
-                                                const egui_font_t *font,
-                                                const char *text,
-                                                egui_dim_t x,
-                                                egui_dim_t y,
-                                                uint32_t rgb)
+static egui_dim_t ui_HomePage_measure_text(const egui_font_t *font,
+                                           const char *text)
 {
     egui_dim_t width = 0;
     egui_dim_t height = 0;
 
-    ui_HomePage_draw_raw_text(canvas, font, text, x, y, rgb);
-    (void)egui_font_get_str_size_with_canvas(font, canvas, text, 0U, 0, &width, &height);
+    if ((font == NULL) || (text == NULL))
+    {
+        return 0;
+    }
+    (void)egui_font_get_str_size_with_canvas(font, NULL, text, 0U, 0, &width, &height);
     return width;
 }
 
@@ -1920,6 +1938,64 @@ static uint8_t ui_HomePage_warm_date_font(void)
     return ui_heiti_font_warm_text(16U, date_markers) ? 1U : 0U;
 }
 
+static void ui_HomePage_update_date_layout(void)
+{
+    static const char month_marker[] = "\346\234\210";
+    static const char day_marker[] = "\346\227\245";
+    const egui_font_t *number_font = EGUI_FONT_OF(&egui_res_font_montserrat_16_4);
+    const char *text = s_home_render_status.date_text;
+    const char *month_pos;
+    const char *day_pos;
+    size_t month_len;
+    size_t day_len;
+
+    if ((strcmp(s_home_date_layout.source, text) == 0) &&
+        (s_home_date_layout.heiti_ready == s_home_heiti_16_ready) &&
+        (s_home_date_layout.heiti_font == s_home_heiti_16))
+    {
+        return;
+    }
+
+    memset(&s_home_date_layout, 0, sizeof(s_home_date_layout));
+    (void)snprintf(s_home_date_layout.source, sizeof(s_home_date_layout.source), "%s", text);
+    s_home_date_layout.heiti_ready = s_home_heiti_16_ready;
+    s_home_date_layout.heiti_font = s_home_heiti_16;
+    month_pos = strstr(text, month_marker);
+    day_pos = (month_pos != NULL) ? strstr(month_pos + sizeof(month_marker) - 1U, day_marker) : NULL;
+    month_len = (month_pos != NULL) ? (size_t)(month_pos - text) : 0U;
+    day_len = ((month_pos != NULL) && (day_pos != NULL)) ?
+                  (size_t)(day_pos - (month_pos + sizeof(month_marker) - 1U)) :
+                  0U;
+    if ((month_len == 0U) || (month_len >= sizeof(s_home_date_layout.month_text)) ||
+        (day_len == 0U) || (day_len >= sizeof(s_home_date_layout.day_text)) ||
+        (day_pos == NULL) || (day_pos[sizeof(day_marker) - 1U] != '\0'))
+    {
+        return;
+    }
+    for (size_t i = 0U; i < month_len; ++i)
+    {
+        if ((text[i] < '0') || (text[i] > '9')) return;
+    }
+    for (size_t i = 0U; i < day_len; ++i)
+    {
+        const char ch = month_pos[sizeof(month_marker) - 1U + i];
+        if ((ch < '0') || (ch > '9')) return;
+    }
+
+    memcpy(s_home_date_layout.month_text, text, month_len);
+    memcpy(s_home_date_layout.day_text, month_pos + sizeof(month_marker) - 1U, day_len);
+    s_home_date_layout.valid = 1U;
+    if (s_home_heiti_16_ready == 0U)
+    {
+        (void)snprintf(s_home_date_layout.ascii_text, sizeof(s_home_date_layout.ascii_text),
+                       "%s/%s", s_home_date_layout.month_text, s_home_date_layout.day_text);
+        return;
+    }
+    s_home_date_layout.month_width = ui_HomePage_measure_text(number_font, s_home_date_layout.month_text);
+    s_home_date_layout.month_marker_width = ui_HomePage_measure_text(s_home_heiti_16, month_marker);
+    s_home_date_layout.day_width = ui_HomePage_measure_text(number_font, s_home_date_layout.day_text);
+}
+
 static void ui_HomePage_draw_date_text(egui_canvas_t *canvas,
                                        const egui_font_t *number_font,
                                        const egui_font_t *heiti_font,
@@ -1930,74 +2006,30 @@ static void ui_HomePage_draw_date_text(egui_canvas_t *canvas,
 {
     static const char month_marker[] = "\346\234\210";
     static const char day_marker[] = "\346\227\245";
-    const char *month_pos;
-    const char *day_pos;
-    size_t month_len;
-    size_t day_len;
-    char month_text[3];
-    char day_text[3];
     egui_dim_t pen_x = x;
 
-    if ((number_font == NULL) || (heiti_font == NULL) || (text == NULL))
+    if ((number_font == NULL) || (heiti_font == NULL) || (text == NULL) ||
+        (s_home_date_layout.valid == 0U) ||
+        (strcmp(s_home_date_layout.source, text) != 0))
     {
         ui_HomePage_draw_raw_text(canvas, heiti_font, text, x, y, rgb);
         return;
     }
-
-    month_pos = strstr(text, month_marker);
-    day_pos = (month_pos != NULL) ? strstr(month_pos + sizeof(month_marker) - 1U, day_marker) : NULL;
-    month_len = (month_pos != NULL) ? (size_t)(month_pos - text) : 0U;
-    day_len = ((month_pos != NULL) && (day_pos != NULL)) ?
-                  (size_t)(day_pos - (month_pos + sizeof(month_marker) - 1U)) :
-                  0U;
-
-    if ((month_len == 0U) || (month_len >= sizeof(month_text)) ||
-        (day_len == 0U) || (day_len >= sizeof(day_text)) ||
-        (day_pos == NULL) || (day_pos[sizeof(day_marker) - 1U] != '\0'))
-    {
-        ui_HomePage_draw_raw_text(canvas, heiti_font, text, x, y, rgb);
-        return;
-    }
-
-    for (size_t i = 0U; i < month_len; i++)
-    {
-        if ((text[i] < '0') || (text[i] > '9'))
-        {
-            ui_HomePage_draw_raw_text(canvas, heiti_font, text, x, y, rgb);
-            return;
-        }
-    }
-    for (size_t i = 0U; i < day_len; i++)
-    {
-        const char ch = month_pos[sizeof(month_marker) - 1U + i];
-
-        if ((ch < '0') || (ch > '9'))
-        {
-            ui_HomePage_draw_raw_text(canvas, heiti_font, text, x, y, rgb);
-            return;
-        }
-    }
-
-    memcpy(month_text, text, month_len);
-    month_text[month_len] = '\0';
-    memcpy(day_text, month_pos + sizeof(month_marker) - 1U, day_len);
-    day_text[day_len] = '\0';
 
     if (s_home_heiti_16_ready == 0U)
     {
-        char ascii_date[6];
-
-        (void)snprintf(ascii_date, sizeof(ascii_date), "%s/%s",
-                       month_text, day_text);
-        ui_HomePage_draw_raw_text(canvas, number_font, ascii_date, x, y, rgb);
+        ui_HomePage_draw_raw_text(canvas, number_font, s_home_date_layout.ascii_text, x, y, rgb);
         return;
     }
 
-    pen_x += ui_HomePage_draw_text_advance(canvas, number_font, month_text, pen_x, y, rgb);
-    pen_x += ui_HomePage_draw_text_advance(canvas, heiti_font, month_marker, pen_x, y, rgb);
+    ui_HomePage_draw_raw_text(canvas, number_font, s_home_date_layout.month_text, pen_x, y, rgb);
+    pen_x += s_home_date_layout.month_width;
+    ui_HomePage_draw_raw_text(canvas, heiti_font, month_marker, pen_x, y, rgb);
+    pen_x += s_home_date_layout.month_marker_width;
     pen_x += 2;
-    pen_x += ui_HomePage_draw_text_advance(canvas, number_font, day_text, pen_x, y, rgb);
-    (void)ui_HomePage_draw_text_advance(canvas, heiti_font, day_marker, pen_x, y, rgb);
+    ui_HomePage_draw_raw_text(canvas, number_font, s_home_date_layout.day_text, pen_x, y, rgb);
+    pen_x += s_home_date_layout.day_width;
+    ui_HomePage_draw_raw_text(canvas, heiti_font, day_marker, pen_x, y, rgb);
 }
 
 static uint8_t ui_HomePage_canvas_intersects(egui_canvas_t *canvas,

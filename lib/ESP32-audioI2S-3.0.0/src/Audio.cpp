@@ -151,7 +151,7 @@ uint32_t AudioBuffer::getReadPos() {
 //---------------------------------------------------------------------------------------------------------------------
 Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_DAC_CHANNEL_BOTH_EN */, uint8_t i2sPort) {
 
-    mutex_audio = xSemaphoreCreateMutex();
+    mutex_audio = xSemaphoreCreateRecursiveMutex();
 
     //    build-in-DAC works only with ESP32 (ESP32-S3 has no build-in-DAC)
     //    build-in-DAC last working Arduino Version: 2.0.0-RC2
@@ -697,7 +697,7 @@ bool Audio::connecttoFS(fs::FS &fs, const char* path, uint32_t resumeFilePos) {
     xSemaphoreTakeRecursive(mutex_audio, portMAX_DELAY); // #3
 
     if(strlen(path)>255){
-        xSemaphoreGive(mutex_audio);
+        xSemaphoreGiveRecursive(mutex_audio);
         return false;
     }
 
@@ -726,7 +726,7 @@ bool Audio::connecttoFS(fs::FS &fs, const char* path, uint32_t resumeFilePos) {
 
     if(!audiofile) {
         if(audio_info) {vTaskDelay(2); audio_info("Failed to open file for reading");}
-        xSemaphoreGive(mutex_audio);
+        xSemaphoreGiveRecursive(mutex_audio);
         return false;
     }
 
@@ -768,7 +768,7 @@ bool Audio::connecttoFS(fs::FS &fs, const char* path, uint32_t resumeFilePos) {
                heap_caps_get_largest_free_block(psramCaps));
     if(ret) m_f_running = true;
     else audiofile.close();
-    xSemaphoreGive(mutex_audio);
+    xSemaphoreGiveRecursive(mutex_audio);
     return ret;
 }
 //---------------------------------------------------------------------------------------------------------------------
@@ -786,7 +786,7 @@ bool Audio::connecttospeech(const char* speech, const char* lang){
     char* speechBuff = (char*)malloc(speechBuffLen);
     if(!speechBuff) {
         log_e("out of memory");
-        xSemaphoreGive(mutex_audio);
+        xSemaphoreGiveRecursive(mutex_audio);
         return false;
     }
     memcpy(speechBuff, speech, speechLen);
@@ -813,7 +813,7 @@ bool Audio::connecttospeech(const char* speech, const char* lang){
     _client = static_cast<WiFiClient*>(&client);
     if(!_client->connect(host, 80)) {
         log_e("Connection failed");
-        xSemaphoreGive(mutex_audio);
+        xSemaphoreGiveRecursive(mutex_audio);
         return false;
     }
     _client->print(resp);
@@ -823,7 +823,7 @@ bool Audio::connecttospeech(const char* speech, const char* lang){
     m_f_ssl = false;
     m_f_tts = true;
     setDatamode(HTTP_RESPONSE_HEADER);
-    xSemaphoreGive(mutex_audio);
+    xSemaphoreGiveRecursive(mutex_audio);
     return true;
 }
 //---------------------------------------------------------------------------------------------------------------------
@@ -867,7 +867,7 @@ bool Audio::connecttomarytts(const char* speech, const char* lang, const char* v
     //          bits1-hsmm                   de female hmm
     //          bits1                        de female unitselection general
 
-    xSemaphoreTake(mutex_audio, portMAX_DELAY);
+    xSemaphoreTakeRecursive(mutex_audio, portMAX_DELAY);
 
     setDefaults();
     char host[] = "mary.dfki.de";
@@ -879,7 +879,7 @@ bool Audio::connecttomarytts(const char* speech, const char* lang, const char* v
     memcpy(m_lastHost, speech, 256);
     char* speechBuff = (char*)malloc(speechBuffLen);
     if(!speechBuff) {log_e("out of memory");
-        xSemaphoreGive(mutex_audio);
+        xSemaphoreGiveRecursive(mutex_audio);
         return false;
     }
     memcpy(speechBuff, speech, speechLen);
@@ -911,7 +911,7 @@ bool Audio::connecttomarytts(const char* speech, const char* lang, const char* v
     _client = static_cast<WiFiClient*>(&client);
     if(!_client->connect(host, port)) {
         log_e("Connection failed");
-        xSemaphoreGive(mutex_audio);
+        xSemaphoreGiveRecursive(mutex_audio);
         return false;
     }
     _client->print(resp);
@@ -922,7 +922,7 @@ bool Audio::connecttomarytts(const char* speech, const char* lang, const char* v
     m_f_tts = true;
     setDatamode(HTTP_RESPONSE_HEADER);
 
-    xSemaphoreGive(mutex_audio);
+    xSemaphoreGiveRecursive(mutex_audio);
     return true;
 }
 //---------------------------------------------------------------------------------------------------------------------
@@ -1348,7 +1348,7 @@ int Audio::read_WAV_Header(uint8_t* data, size_t len) {
         headerSize += 4;
         if(getDatamode() == AUDIO_LOCALFILE) m_contentlength = getFileSize();
         if(cs){
-            m_audioDataSize = cs  - 44;
+            m_audioDataSize = cs;
         }
         else { // sometimes there is nothing here
             if(getDatamode() == AUDIO_LOCALFILE) m_audioDataSize = getFileSize() - headerSize;
@@ -2135,6 +2135,7 @@ size_t Audio::process_m3u8_ID3_Header(uint8_t* packet){
 }
 //---------------------------------------------------------------------------------------------------------------------
 uint32_t Audio::stopSong() {
+    xSemaphoreTakeRecursive(mutex_audio, portMAX_DELAY);
     uint32_t pos = 0;
     if(m_f_running) {
         m_f_running = false;
@@ -2151,13 +2152,21 @@ uint32_t Audio::stopSong() {
         AUDIO_INFO("Closing audio file");
         log_w("Closing audio file");  // for debug
     }
+    if(m_codec == CODEC_MP3)  MP3Decoder_FreeBuffers();
+    if(m_codec == CODEC_AAC || m_codec == CODEC_M4A) AACDecoder_FreeBuffers();
+    if(m_codec == CODEC_FLAC) FLACDecoder_FreeBuffers();
+    if(m_codec == CODEC_OPUS) OPUSDecoder_FreeBuffers();
+    m_f_playing = false;
+    m_validSamples = 0;
+    m_curSample = 0;
     memset(m_outBuff, 0, sizeof(m_outBuff));     //Clear OutputBuffer
     i2s_zero_dma_buffer((i2s_port_t) m_i2s_num);
+    xSemaphoreGiveRecursive(mutex_audio);
     return pos;
 }
 //---------------------------------------------------------------------------------------------------------------------
 bool Audio::pauseResume() {
-    xSemaphoreTake(mutex_audio, portMAX_DELAY);
+    xSemaphoreTakeRecursive(mutex_audio, portMAX_DELAY);
     bool retVal = false;
     if(getDatamode() == AUDIO_LOCALFILE || m_streamType == ST_WEBSTREAM) {
         m_f_running = !m_f_running;
@@ -2167,7 +2176,7 @@ bool Audio::pauseResume() {
             i2s_zero_dma_buffer((i2s_port_t) m_i2s_num);
         }
     }
-    xSemaphoreGive(mutex_audio);
+    xSemaphoreGiveRecursive(mutex_audio);
     return retVal;
 }
 //---------------------------------------------------------------------------------------------------------------------
@@ -2260,7 +2269,7 @@ void Audio::loop() {
 
     if(!m_f_running) return;
 
-    xSemaphoreTake(mutex_audio, portMAX_DELAY);
+    xSemaphoreTakeRecursive(mutex_audio, portMAX_DELAY);
 
     if(m_playlistFormat != FORMAT_M3U8){ // normal process
         switch(getDatamode()){
@@ -2333,7 +2342,7 @@ void Audio::loop() {
                 break;
         }
     }
-    xSemaphoreGive(mutex_audio);
+    xSemaphoreGiveRecursive(mutex_audio);
 }
 //---------------------------------------------------------------------------------------------------------------------
 bool Audio::readPlayListData() {
@@ -2855,10 +2864,9 @@ void Audio::processLocalFile() {
     // play audio data - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(f_stream){
         static uint8_t cnt = 0;
-        uint8_t compression;
-        if(m_codec == CODEC_WAV)  compression = 1;
-        if(m_codec == CODEC_FLAC) compression = 2;
-        else compression = 3;
+        uint8_t compression = 3;
+        if(m_codec == CODEC_WAV) compression = 1;
+        else if(m_codec == CODEC_FLAC) compression = 2;
         cnt++;
         if(cnt == compression){playAudioData(); cnt = 0;}
     }
@@ -2926,10 +2934,9 @@ void Audio::processWebStream() {
     // play audio data - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(f_stream){
         static uint8_t cnt = 0;
-        uint8_t compression;
-        if(m_codec == CODEC_WAV)  compression = 1;
-        if(m_codec == CODEC_FLAC) compression = 2;
-        else compression = 3;
+        uint8_t compression = 3;
+        if(m_codec == CODEC_WAV) compression = 1;
+        else if(m_codec == CODEC_FLAC) compression = 2;
         cnt++;
         if(cnt == compression){playAudioData(); cnt = 0;}
     }
@@ -4237,7 +4244,10 @@ bool Audio::setTimeOffset(int sec){
 bool Audio::setFilePos(uint32_t pos) {
     if(m_codec == CODEC_OPUS) return false; // not impl. yet
     xSemaphoreTakeRecursive(mutex_audio, portMAX_DELAY);
-    if(!audiofile) return false;
+    if(!audiofile) {
+        xSemaphoreGiveRecursive(mutex_audio);
+        return false;
+    }
     if(pos < m_audioDataStart) pos = m_audioDataStart; // issue #96
     if(pos > m_file_size) pos = m_file_size;
     m_resumeFilePos = pos;

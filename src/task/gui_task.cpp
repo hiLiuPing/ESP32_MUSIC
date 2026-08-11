@@ -5,8 +5,14 @@
 #include "gui/page_manager.h"
 #include "gui/egui_port.h"
 #include "gui/screens/ui_music_page.h"
+#include "gui/ui_heiti_font.h"
 #include "gui/ui.h"
 #include "task/task_system.h"
+
+namespace {
+constexpr uint32_t GUI_POLL_WARN_MS = 250U;
+constexpr uint32_t GUI_POLL_LOG_INTERVAL_MS = 1000U;
+}
 
 void gui_task(void *parameter) {
     (void)parameter;
@@ -18,6 +24,7 @@ void gui_task(void *parameter) {
     }
 
     uint32_t last_input_ms = millis();
+    uint32_t last_slow_poll_log_ms = 0U;
     bool display_sleeping = false;
     for (;;) {
         KeyEvent event = {};
@@ -39,7 +46,16 @@ void gui_task(void *parameter) {
         ui_music_page_cache_service();
         gui_page_service();
         gui_page_render();
+        const uint32_t poll_started_ms = millis();
         egui_port_poll();
+        const uint32_t poll_elapsed_ms = millis() - poll_started_ms;
+        const uint32_t poll_finished_ms = millis();
+        if (poll_elapsed_ms >= GUI_POLL_WARN_MS &&
+            (last_slow_poll_log_ms == 0U ||
+             poll_finished_ms - last_slow_poll_log_ms >= GUI_POLL_LOG_INTERVAL_MS)) {
+            last_slow_poll_log_ms = poll_finished_ms;
+            ui_heiti_font_log_cache_stats(poll_elapsed_ms);
+        }
 
         const AppSettings settings = settings_app_get();
         if (!display_sleeping && settings.screen_idle_min != 0U &&
@@ -47,6 +63,6 @@ void gui_task(void *parameter) {
             bsp_display().display_on(false);
             display_sleeping = true;
         }
-        xSemaphoreTake(GuiWakeSemaphore, pdMS_TO_TICKS(50));
+        xSemaphoreTake(GuiWakeSemaphore, pdMS_TO_TICKS(30));
     }
 }

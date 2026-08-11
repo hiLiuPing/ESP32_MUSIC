@@ -8,6 +8,7 @@
 #include "app/system_notify.h"
 #include "gui/egui_port.h"
 #include "gui/gui_common.h"
+#include "gui/ui_heiti_font.h"
 #include "task/file_manager_task.h"
 #include "task/weather_sync_task.h"
 
@@ -31,9 +32,21 @@ constexpr int16_t ROW_HEIGHT = 22;
 constexpr uint16_t SELECTION_ANIMATION_MS = 240U;
 constexpr uint32_t MANUAL_SYNC_COOLDOWN_MS = 30000U;
 
-const char *labels[ITEM_COUNT] = {"POETRY POPUP", "POETRY DURATION", "WEATHER SYNC",
-                                  "SYNC NOW", "WIFI CONFIG", "FILE MANAGER",
-                                  "SCREEN SLEEP"};
+const char *labels[ITEM_COUNT] = {"诗词弹窗", "展示时长", "天气同步", "立即同步",
+                                  "无线网络", "文件管理", "屏幕休眠"};
+
+const egui_font_t *setting_font() {
+    const egui_font_t *font = ui_heiti_font_get_cached(16U);
+    return font != nullptr ? font
+                           : reinterpret_cast<const egui_font_t *>(EGUI_CONFIG_FONT_DEFAULT);
+}
+
+void draw_setting_header(egui_canvas_t *canvas, const char *title) {
+    egui_canvas_draw_text(canvas, setting_font(), title, 8, 4,
+                          EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+    egui_canvas_draw_line(canvas, 0, 21, EGUI_CONFIG_SCREEN_WIDTH - 1, 21, 1,
+                          EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+}
 
 uint16_t adjust_interval(uint16_t value, int delta) {
     if (value == 0U) return delta > 0 ? 30U : 0U;
@@ -107,49 +120,52 @@ void format_value(uint8_t i, char *out, size_t size) {
     switch (i) {
         case 0:
             std::snprintf(out, size,
-                          settings.poetry_interval_min ? "%u MIN" : "OFF",
+                          settings.poetry_interval_min ? "%u 分钟" : "关闭",
                           settings.poetry_interval_min);
             break;
-        case 1: std::snprintf(out, size, "%u SEC", settings.poetry_duration_s); break;
+        case 1: std::snprintf(out, size, "%u 秒", settings.poetry_duration_s); break;
         case 2:
             std::snprintf(out, size,
-                          settings.weather_interval_min ? "%u MIN" : "OFF",
+                          settings.weather_interval_min ? "%u 分钟" : "关闭",
                           settings.weather_interval_min);
             break;
         case 3:
-            std::snprintf(out, size, "%s", manual_sync_ready(millis()) ? "RUN" : "WAIT");
+            std::snprintf(out, size, "%s", manual_sync_ready(millis()) ? "执行" : "等待");
             break;
-        case 4: std::snprintf(out, size, "%s", weather_sync_is_provisioning() ? "STOP" : "START"); break;
-        case 5: std::snprintf(out, size, "%s", file_manager_is_active() ? "STOP" : "START"); break;
-        case 6: std::snprintf(out, size, settings.screen_idle_min ? "%u MIN" : "OFF", settings.screen_idle_min); break;
+        case 4: std::snprintf(out, size, "%s", weather_sync_is_provisioning() ? "停止" : "启动"); break;
+        case 5: std::snprintf(out, size, "%s", file_manager_is_active() ? "停止" : "启动"); break;
+        case 6: std::snprintf(out, size, settings.screen_idle_min ? "%u 分钟" : "关闭", settings.screen_idle_min); break;
         default: out[0] = '\0'; break;
     }
 }
 
 void draw(egui_canvas_t *canvas) {
     gui_draw_page_background(canvas);
-    gui_draw_header(canvas, editing ? "SETTING EDIT" : "SETTING");
+    draw_setting_header(canvas, editing ? "编辑设置" : "设置");
     const uint8_t first = visible_first();
     for (uint8_t row = 0U; row < VISIBLE_ITEMS && first + row < ITEM_COUNT; ++row) {
         const uint8_t i = first + row;
         const int16_t y = static_cast<int16_t>(27 + row * ROW_HEIGHT);
         const bool focused = navigation_active && i == selected;
-        const egui_color_t color = EGUI_COLOR_BLACK;
+        const egui_color_t color = focused ? EGUI_COLOR_WHITE : EGUI_COLOR_BLACK;
         if (focused) {
-            egui_canvas_draw_round_rectangle(canvas, 4, selection_box_y, 376, 20, 5, 1,
-                                             EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+            egui_canvas_draw_round_rectangle_fill(canvas, 4, selection_box_y, 376, 20, 5,
+                                                  EGUI_COLOR_BLACK, EGUI_ALPHA_100);
         }
-        egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4), labels[i], 12, y, color, EGUI_ALPHA_100);
+        egui_canvas_draw_text(canvas, setting_font(), labels[i], 12, y, color, EGUI_ALPHA_100);
         char value[20] = {};
         format_value(i, value, sizeof(value));
-        egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4), value, 270, y, color, EGUI_ALPHA_100);
+        egui_canvas_draw_text(canvas, setting_font(), value, 270, y, color, EGUI_ALPHA_100);
     }
     if (navigation_active) {
-        const char *hint = editing ? "MIDDLE SAVE" :
-                           selected == 3U ? "MIDDLE SYNC" :
-                           selected == 4U ? "MIDDLE WIFI" :
-                           selected == 5U ? "MIDDLE FILE" : "MIDDLE EDIT";
-        gui_draw_text(canvas, 12, 153, hint);
+        const char *hint = editing ? "中键保存" :
+                           selected == 3U ? "中键同步" :
+                           selected == 4U ? "中键网络" :
+                           selected == 5U ? "中键文件" : nullptr;
+        if (hint != nullptr) {
+            egui_canvas_draw_text(canvas, setting_font(), hint, 12, 150,
+                                  EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+        }
     }
 }
 

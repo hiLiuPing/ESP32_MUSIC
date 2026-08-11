@@ -32,7 +32,7 @@ constexpr int16_t SPECTRUM_HEIGHT = 61;
 constexpr int16_t SPECTRUM_PEAK_HEIGHT = 2;
 constexpr int16_t PROGRESS_Y = 95;
 constexpr int16_t TIME_Y = 105;
-constexpr egui_region_t LYRIC_REGION = {{116, TIME_Y}, {152, 18}};
+constexpr egui_region_t LYRIC_REGION = {{108, TIME_Y}, {152, 18}};
 constexpr egui_region_t TITLE_REGION = {{12, 1}, {360, 20}};
 constexpr egui_region_t SPECTRUM_REGION = {{12, 23}, {360, 65}};
 constexpr egui_region_t PROGRESS_REGION = {{12, 91}, {360, 34}};
@@ -126,6 +126,13 @@ void draw_centered_text(egui_canvas_t *canvas, const egui_font_t *font,
     egui_canvas_draw_text_in_rect(canvas, font, text, &region,
                                   EGUI_ALIGN_CENTER | EGUI_ALIGN_VCENTER,
                                   color, EGUI_ALPHA_100);
+}
+
+void draw_music_settings_header(egui_canvas_t *canvas, const char *title) {
+    egui_canvas_draw_text(canvas, music_font(), title, 8, 4,
+                          EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+    egui_canvas_draw_line(canvas, 0, 21, EGUI_CONFIG_SCREEN_WIDTH - 1, 21, 1,
+                          EGUI_COLOR_BLACK, EGUI_ALPHA_100);
 }
 
 void draw_right_text(egui_canvas_t *canvas, const egui_font_t *font,
@@ -365,7 +372,7 @@ void draw_main(egui_canvas_t *canvas) {
 
 void draw_volume(egui_canvas_t *canvas) {
     gui_draw_page_background(canvas);
-    gui_draw_header(canvas, "VOLUME");
+    draw_music_settings_header(canvas, "音量");
     draw_speaker_icon(canvas, 64, 68, EGUI_COLOR_BLACK);
 
     char value[24] = {};
@@ -387,9 +394,9 @@ void draw_volume(egui_canvas_t *canvas) {
                                               fill_width, 10, 3,
                                               EGUI_COLOR_BLACK, EGUI_ALPHA_100);
     }
-    gui_draw_text(canvas, bar_x, 137, "MIN");
-    draw_right_text(canvas, reinterpret_cast<const egui_font_t *>(EGUI_CONFIG_FONT_DEFAULT),
-                    "MAX", bar_x, 134, bar_width, 20);
+    egui_canvas_draw_text(canvas, music_font(), "最小", bar_x, 137,
+                          EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+    draw_right_text(canvas, music_font(), "最大", bar_x, 134, bar_width, 20);
 }
 
 void clamp_playlist_window() {
@@ -554,12 +561,12 @@ void draw_playlist_tracks(egui_canvas_t *canvas) {
 
 const char *audio_setting_label(uint8_t index) {
     switch (index) {
-        case 0: return "VOLUME";
-        case 1: return "SPEAKER";
-        case 2: return "BASS";
-        case 3: return "TREBLE";
-        case 4: return "3D SURROUND";
-        case 5: return "SLEEP TIMER";
+        case 0: return "音量";
+        case 1: return "扬声器";
+        case 2: return "低音";
+        case 3: return "高音";
+        case 4: return "3D 环绕";
+        case 5: return "定时关闭";
         default: return "";
     }
 }
@@ -569,15 +576,15 @@ void format_audio_setting(uint8_t index, char *out, size_t size) {
         case 0: std::snprintf(out, size, "%u / %u", audio_draft.volume,
                               PLAYER_VOLUME_MAX); break;
         case 1: std::snprintf(out, size, "%s",
-                              audio_draft.amplifier_enabled ? "ON" : "OFF"); break;
-        case 2: std::snprintf(out, size, "%+d DB", audio_draft.bass_db); break;
-        case 3: std::snprintf(out, size, "%+d DB", audio_draft.treble_db); break;
+                              audio_draft.amplifier_enabled ? "开启" : "关闭"); break;
+        case 2: std::snprintf(out, size, "%+d 分贝", audio_draft.bass_db); break;
+        case 3: std::snprintf(out, size, "%+d 分贝", audio_draft.treble_db); break;
         case 4: std::snprintf(out, size, "%u / 15", audio_draft.surround_depth); break;
         case 5:
             if (audio_draft.sleep_timer_min == 0U) {
-                std::snprintf(out, size, "OFF");
+                std::snprintf(out, size, "关闭");
             } else {
-                std::snprintf(out, size, "%u MIN", audio_draft.sleep_timer_min);
+                std::snprintf(out, size, "%u 分钟", audio_draft.sleep_timer_min);
             }
             break;
         default: out[0] = '\0'; break;
@@ -586,7 +593,7 @@ void format_audio_setting(uint8_t index, char *out, size_t size) {
 
 void draw_audio_settings(egui_canvas_t *canvas) {
     gui_draw_page_background(canvas);
-    gui_draw_header(canvas, audio_editing ? "AUDIO EDIT" : "AUDIO SETTING");
+    draw_music_settings_header(canvas, audio_editing ? "编辑音频" : "音频设置");
     for (uint8_t index = 0U; index < AUDIO_ITEM_COUNT; ++index) {
         const int16_t y = static_cast<int16_t>(27 + index * 22);
         const bool focused = navigation_active && index == audio_selected;
@@ -595,15 +602,17 @@ void draw_audio_settings(egui_canvas_t *canvas) {
                                             EGUI_COLOR_BLACK, EGUI_ALPHA_100);
         }
         const egui_color_t color = focused ? EGUI_COLOR_WHITE : EGUI_COLOR_BLACK;
-        egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+        egui_canvas_draw_text(canvas, music_font(),
                               audio_setting_label(index), 12, y, color, EGUI_ALPHA_100);
         char value[20] = {};
         format_audio_setting(index, value, sizeof(value));
-        egui_canvas_draw_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+        egui_canvas_draw_text(canvas, music_font(),
                               value, 270, y, color, EGUI_ALPHA_100);
     }
-    if (navigation_active) {
-        gui_draw_text(canvas, 12, 153, audio_editing ? "MIDDLE SAVE" : "MIDDLE EDIT");
+    if (navigation_active && audio_editing) {
+        egui_canvas_draw_text(canvas, music_font(),
+                              "中键保存", 12, 150,
+                              EGUI_COLOR_BLACK, EGUI_ALPHA_100);
     }
 }
 

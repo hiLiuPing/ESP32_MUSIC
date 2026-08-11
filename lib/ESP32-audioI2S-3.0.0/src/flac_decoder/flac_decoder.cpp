@@ -74,11 +74,23 @@ void FLACDecoder_ClearBuffer(){
 }
 //----------------------------------------------------------------------------------------------------------------------
 void FLACDecoder_FreeBuffers(){
+    FLACDecoderReset();
     if(FLACFrameHeader)    {free(FLACFrameHeader);    FLACFrameHeader    = NULL;}
     if(FLACMetadataBlock)  {free(FLACMetadataBlock);  FLACMetadataBlock  = NULL;}
     if(FLACsubFramesBuff)  {free(FLACsubFramesBuff);  FLACsubFramesBuff  = NULL;}
     if(m_streamTitle)      {free(m_streamTitle);      m_streamTitle      = NULL;}
     if(s_flacSegmentTable) {free(s_flacSegmentTable); s_flacSegmentTable = NULL;}
+    coefs.clear();
+    coefs.shrink_to_fit();
+    m_blockSize = 0;
+    m_blockSizeLeft = 0;
+    m_validSamples = 0;
+    m_inptr = NULL;
+    m_rIndex = 0;
+    s_f_flacParseOgg = false;
+    m_flacPageSegments = 0;
+    m_page0_len = 0;
+    s_f_newSt = false;
 }
 //----------------------------------------------------------------------------------------------------------------------
 //            B I T R E A D E R

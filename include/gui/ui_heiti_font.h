@@ -14,3 +14,4 @@ bool ui_heiti_font_text_is_cached(uint8_t size, const char *text);
 size_t ui_heiti_font_poetry_cache_bytes();
 size_t ui_heiti_font_poetry_cache_glyphs();
 uint32_t ui_heiti_font_storage_read_count();
+void ui_heiti_font_log_cache_stats(uint32_t poll_ms);

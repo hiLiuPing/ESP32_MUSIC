@@ -5,7 +5,7 @@
 #include "app/poetry_app.h"
 #include "gui/egui_port.h"
 
-constexpr uint8_t UI_POETRY_CACHE_SLOT_COUNT = 5U;
+constexpr uint8_t UI_POETRY_CACHE_SLOT_COUNT = 10U;
 constexpr uint8_t UI_POETRY_FONT_SIZE = 18U;
 constexpr uint8_t UI_POETRY_MAX_LINES = 6U;
 constexpr int16_t UI_POETRY_PANEL_X = 32;
@@ -28,6 +28,8 @@ struct UiPoetryCacheSlot {
     PoetryCollection collection;
     uint32_t content_hash;
     bool valid;
+    bool in_use;
+    bool consumed;
     char title[128];
     char body[3072];
     const char *lines[UI_POETRY_MAX_LINES];
@@ -41,6 +43,7 @@ struct UiPoetryCacheSlot {
 bool ui_poetry_cache_init();
 bool ui_poetry_cache_service();
 const UiPoetryCacheSlot *ui_poetry_cache_select(PoetryCollection collection);
+void ui_poetry_cache_release(const UiPoetryCacheSlot *slot);
 size_t ui_poetry_cache_ready_count(PoetryCollection collection);
 void ui_poetry_cache_draw(egui_canvas_t *canvas, const UiPoetryCacheSlot *slot,
                           int16_t panel_x = UI_POETRY_PANEL_X,

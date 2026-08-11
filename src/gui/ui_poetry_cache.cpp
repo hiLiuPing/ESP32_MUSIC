@@ -12,13 +12,7 @@ constexpr uint8_t PREPARE_RETRIES = 24U;
 constexpr uint32_t SLOT_INTERVAL_MS = 250U;
 constexpr uint32_t FAILURE_RETRY_MS = 5000U;
 
-constexpr PoetryCollection SLOT_COLLECTIONS[UI_POETRY_CACHE_SLOT_COUNT] = {
-    PoetryCollection::Song3000,
-    PoetryCollection::Song300,
-    PoetryCollection::Song3000,
-    PoetryCollection::Song300,
-    PoetryCollection::Song3000,
-};
+constexpr PoetryCollection SLOT_COLLECTION = PoetryCollection::Song3000;
 
 UiPoetryCacheSlot *slots = nullptr;
 uint8_t next_slot = 0U;
@@ -34,6 +28,35 @@ enum class PrepareFailure : uint8_t {
     Glyph,
     Count,
 };
+
+bool batch_ready() {
+    if (slots == nullptr) return false;
+    for (uint8_t index = 0U; index < UI_POETRY_CACHE_SLOT_COUNT; ++index) {
+        if (!slots[index].valid) return false;
+    }
+    return true;
+}
+
+bool batch_consumed() {
+    if (!batch_ready()) return false;
+    for (uint8_t index = 0U; index < UI_POETRY_CACHE_SLOT_COUNT; ++index) {
+        if (!slots[index].consumed || slots[index].in_use) return false;
+    }
+    return true;
+}
+
+void reset_batch() {
+    for (uint8_t index = 0U; index < UI_POETRY_CACHE_SLOT_COUNT; ++index) {
+        slots[index].valid = false;
+        slots[index].in_use = false;
+        slots[index].consumed = false;
+        slots[index].content_hash = 0U;
+        slots[index].line_count = 0U;
+    }
+    next_slot = 0U;
+    std::memset(selection_cursor, 0, sizeof(selection_cursor));
+    next_attempt_ms = 0U;
+}
 
 uint8_t utf8_bytes(const char *text) {
     if (text == nullptr || *text == '\0') return 0U;
@@ -91,7 +114,7 @@ uint32_t content_hash(const PoetryEntry &entry) {
 }
 
 bool duplicate_hash(uint32_t hash) {
-    for (uint8_t i = 0U; i < next_slot; ++i) {
+    for (uint8_t i = 0U; i < UI_POETRY_CACHE_SLOT_COUNT; ++i) {
         if (slots[i].valid && slots[i].content_hash == hash) return true;
     }
     return false;
@@ -166,6 +189,8 @@ bool prepare_slot(UiPoetryCacheSlot &slot, const PoetryEntry &entry,
                   PrepareFailure *failure) {
     if (failure != nullptr) *failure = PrepareFailure::None;
     slot.valid = false;
+    slot.in_use = false;
+    slot.consumed = false;
     slot.line_count = 0U;
     if (!entry.valid || entry.title == nullptr || entry.body == nullptr) {
         if (failure != nullptr) *failure = PrepareFailure::Invalid;
@@ -237,14 +262,27 @@ bool ui_poetry_cache_init() {
 }
 
 bool ui_poetry_cache_service() {
-    if (!ui_poetry_cache_init() || next_slot >= UI_POETRY_CACHE_SLOT_COUNT) return false;
+    if (!ui_poetry_cache_init()) return false;
     PlayerStatus status = {};
     if (player_app_get_status(&status) && status.state == PlayerState::Playing) return false;
     const uint32_t now = millis();
     if (static_cast<int32_t>(now - next_attempt_ms) < 0) return false;
 
-    UiPoetryCacheSlot &slot = slots[next_slot];
-    const PoetryCollection collection = SLOT_COLLECTIONS[next_slot];
+    uint8_t slot_index = next_slot;
+    bool found_slot = false;
+    for (uint8_t offset = 0U; offset < UI_POETRY_CACHE_SLOT_COUNT; ++offset) {
+        const uint8_t index = static_cast<uint8_t>(
+            (next_slot + offset) % UI_POETRY_CACHE_SLOT_COUNT);
+        if (!slots[index].valid && !slots[index].in_use) {
+            slot_index = index;
+            found_slot = true;
+            break;
+        }
+    }
+    if (!found_slot) return false;
+
+    UiPoetryCacheSlot &slot = slots[slot_index];
+    const PoetryCollection collection = SLOT_COLLECTION;
     uint8_t read_failures = 0U;
     uint8_t failures[static_cast<uint8_t>(PrepareFailure::Count)] = {};
     for (uint8_t retry = 0U; retry < PREPARE_RETRIES; ++retry) {
@@ -255,10 +293,13 @@ bool ui_poetry_cache_service() {
         }
         PrepareFailure failure = PrepareFailure::None;
         if (prepare_slot(slot, entry, &failure)) {
-            ++next_slot;
+            next_slot = static_cast<uint8_t>(
+                (slot_index + 1U) % UI_POETRY_CACHE_SLOT_COUNT);
             next_attempt_ms = now + SLOT_INTERVAL_MS;
             Serial.printf("[POETRY_CACHE] ready=%u/%u collection=%u glyphs=%u reads=%lu free_psram=%u\n",
-                          next_slot, UI_POETRY_CACHE_SLOT_COUNT,
+                          static_cast<unsigned>(ui_poetry_cache_ready_count(
+                              PoetryCollection::Song3000)),
+                          UI_POETRY_CACHE_SLOT_COUNT,
                           static_cast<unsigned>(collection),
                           static_cast<unsigned>(ui_heiti_font_poetry_cache_glyphs()),
                           static_cast<unsigned long>(ui_heiti_font_storage_read_count()),
@@ -267,6 +308,7 @@ bool ui_poetry_cache_service() {
         }
         ++failures[static_cast<uint8_t>(failure)];
     }
+    next_slot = slot_index;
     next_attempt_ms = now + FAILURE_RETRY_MS;
     Serial.printf("[POETRY_CACHE] prepare failed collection=%u read=%u invalid=%u duplicate=%u layout=%u glyph=%u retry_ms=%lu\n",
                   static_cast<unsigned>(collection), read_failures,
@@ -279,13 +321,15 @@ bool ui_poetry_cache_service() {
 }
 
 const UiPoetryCacheSlot *ui_poetry_cache_select(PoetryCollection collection) {
-    if (slots == nullptr) return nullptr;
+    if (!batch_ready()) return nullptr;
     const uint8_t ci = static_cast<uint8_t>(collection);
     if (ci >= sizeof(selection_cursor)) return nullptr;
     for (uint8_t offset = 0U; offset < UI_POETRY_CACHE_SLOT_COUNT; ++offset) {
         const uint8_t index = static_cast<uint8_t>(
             (selection_cursor[ci] + offset) % UI_POETRY_CACHE_SLOT_COUNT);
-        if (slots[index].valid && slots[index].collection == collection) {
+        if (slots[index].valid && !slots[index].in_use && !slots[index].consumed &&
+            slots[index].collection == collection) {
+            slots[index].in_use = true;
             selection_cursor[ci] = static_cast<uint8_t>(
                 (index + 1U) % UI_POETRY_CACHE_SLOT_COUNT);
             return &slots[index];
@@ -294,11 +338,24 @@ const UiPoetryCacheSlot *ui_poetry_cache_select(PoetryCollection collection) {
     return nullptr;
 }
 
+void ui_poetry_cache_release(const UiPoetryCacheSlot *slot) {
+    if (slots == nullptr || slot == nullptr) return;
+    for (uint8_t index = 0U; index < UI_POETRY_CACHE_SLOT_COUNT; ++index) {
+        if (slot != &slots[index]) continue;
+        if (!slots[index].valid || !slots[index].in_use) return;
+        slots[index].in_use = false;
+        slots[index].consumed = true;
+        if (batch_consumed()) reset_batch();
+        return;
+    }
+}
+
 size_t ui_poetry_cache_ready_count(PoetryCollection collection) {
     size_t count = 0U;
-    if (slots == nullptr) return count;
+    if (!batch_ready()) return count;
     for (uint8_t i = 0U; i < UI_POETRY_CACHE_SLOT_COUNT; ++i) {
-        if (slots[i].valid && slots[i].collection == collection) ++count;
+        if (slots[i].valid && !slots[i].in_use && !slots[i].consumed &&
+            slots[i].collection == collection) ++count;
     }
     return count;
 }

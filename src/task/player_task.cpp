@@ -23,6 +23,8 @@ constexpr int AUDIO_PSRAM_BUFFER_BYTES = 512 * 1024;
 constexpr uint32_t SPECTRUM_INTERVAL_MS = 80;
 constexpr uint32_t STATUS_INTERVAL_MS = 100;
 constexpr uint32_t WEATHER_RECOVERY_GRACE_MS = 15000;
+constexpr uint32_t VOLUME_FADE_OUT_MS = 150;
+constexpr uint32_t VOLUME_FADE_IN_MS = 400;
 constexpr float SPECTRUM_MIN_HZ = 80.0F;
 constexpr float SPECTRUM_MAX_HZ = 16000.0F;
 constexpr float SPECTRUM_MIN_DB = -72.0F;
@@ -45,6 +47,39 @@ uint32_t last_sleep_timer_ms = 0U;
 TickType_t last_status_tick = 0;
 TickType_t last_spectrum_tick = 0;
 
+enum class FadeMode : uint8_t { None, Out, In };
+
+struct VolumeFade {
+    FadeMode mode = FadeMode::None;
+    uint8_t start_volume = 0U;
+    uint8_t target_volume = 0U;
+    uint32_t started_ms = 0U;
+    uint32_t duration_ms = 0U;
+};
+
+enum class TransitionType : uint8_t {
+    None,
+    StartTrack,
+    Pause,
+    StopForStorage,
+    Rescan,
+    SleepStop,
+    RestartCurrentTrack,
+};
+
+struct PendingTransition {
+    TransitionType type = TransitionType::None;
+    uint16_t track_index = 0U;
+    int direction = 1;
+    bool reset_attempts = true;
+    bool keep_stopped = false;
+    uint32_t resume_file_pos = 0U;
+};
+
+VolumeFade volume_fade = {};
+PendingTransition pending_transition = {};
+uint8_t output_volume = 0U;
+
 alignas(16) float fft_data[FFT_SIZE * 2] = {};
 alignas(16) float fft_table[FFT_SIZE] = {};
 float fft_window[FFT_SIZE] = {};
@@ -61,6 +96,13 @@ char current_path[PLAYER_PATH_LENGTH] = {};
 
 void publish(bool force = false);
 void clear_spectrum();
+void set_output_volume(uint8_t volume);
+void begin_volume_fade(FadeMode mode, uint8_t target_volume, uint32_t duration_ms);
+void begin_fade_in();
+bool service_volume_fade();
+bool transition_pending();
+void request_transition(const PendingTransition &transition);
+void service_transition();
 
 void clear_weather_recovery() {
     weather_recovery_pending = false;
@@ -74,6 +116,72 @@ void log_psram_usage(const char *phase) {
                   phase == nullptr ? "unknown" : phase,
                   static_cast<unsigned>(heap_caps_get_free_size(caps)),
                   static_cast<unsigned>(heap_caps_get_largest_free_block(caps)));
+}
+
+void set_output_volume(uint8_t volume) {
+    output_volume = static_cast<uint8_t>(
+        constrain(static_cast<int>(volume), PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX));
+    audio.setVolume(output_volume);
+}
+
+void begin_volume_fade(FadeMode mode, uint8_t target_volume, uint32_t duration_ms) {
+    target_volume = static_cast<uint8_t>(
+        constrain(static_cast<int>(target_volume), PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX));
+    if (output_volume == target_volume || duration_ms == 0U) {
+        set_output_volume(target_volume);
+        volume_fade.mode = FadeMode::None;
+        return;
+    }
+
+    volume_fade.mode = mode;
+    volume_fade.start_volume = output_volume;
+    volume_fade.target_volume = target_volume;
+    volume_fade.started_ms = millis();
+    volume_fade.duration_ms = duration_ms;
+}
+
+void begin_fade_in() {
+    begin_volume_fade(FadeMode::In, status.volume, VOLUME_FADE_IN_MS);
+}
+
+bool service_volume_fade() {
+    if (volume_fade.mode == FadeMode::None) return false;
+
+    const uint32_t elapsed = millis() - volume_fade.started_ms;
+    const uint32_t duration = volume_fade.duration_ms;
+    if (elapsed >= duration) {
+        set_output_volume(volume_fade.target_volume);
+        volume_fade.mode = FadeMode::None;
+        return true;
+    }
+
+    const int32_t delta = static_cast<int32_t>(volume_fade.target_volume) -
+                          static_cast<int32_t>(volume_fade.start_volume);
+    const int32_t scaled = static_cast<int32_t>(volume_fade.start_volume) +
+                           (delta * static_cast<int32_t>(elapsed) +
+                            static_cast<int32_t>(duration / 2U)) /
+                               static_cast<int32_t>(duration);
+    set_output_volume(static_cast<uint8_t>(
+        constrain(scaled, static_cast<int32_t>(PLAYER_VOLUME_MIN),
+                  static_cast<int32_t>(PLAYER_VOLUME_MAX))));
+    return false;
+}
+
+bool transition_pending() {
+    return pending_transition.type != TransitionType::None;
+}
+
+void request_transition(const PendingTransition &transition) {
+    pending_transition = transition;
+    begin_volume_fade(FadeMode::Out, PLAYER_VOLUME_MIN, VOLUME_FADE_OUT_MS);
+}
+
+void apply_target_volume() {
+    if (volume_fade.mode == FadeMode::In) {
+        volume_fade.target_volume = status.volume;
+    } else if (!transition_pending() && status.state == PlayerState::Playing) {
+        set_output_volume(status.volume);
+    }
 }
 
 bool ends_with_ignore_case(const char *path, const char *extension) {
@@ -150,13 +258,19 @@ void append_utf8_truncated(char *destination, size_t destination_size,
     }
 }
 
-void post_track_feedback(bool enabled, const char *action) {
+void post_track_feedback(bool enabled, const char *action,
+                         uint16_t playlist_track_index) {
     if (!enabled || action == nullptr) return;
     char text[sizeof(SystemNotifyMessage::text)] = {};
     std::snprintf(text, sizeof(text), "%s", action);
-    if (status.file_name[0] != '\0') {
+    char track_name[PLAYER_NAME_LENGTH] = {};
+    const bool has_track_name =
+        music_library_playlist_track_get(status.playlist_index,
+                                          playlist_track_index, nullptr, nullptr,
+                                          0U, track_name, sizeof(track_name));
+    if (has_track_name && track_name[0] != '\0') {
         append_utf8_truncated(text, sizeof(text), " ");
-        append_utf8_truncated(text, sizeof(text), status.file_name);
+        append_utf8_truncated(text, sizeof(text), track_name);
     }
     post_music_feedback(true, text);
 }
@@ -223,17 +337,9 @@ void service_sleep_timer() {
     }
 
     status.sleep_timer_remaining_seconds = 0U;
-    audio.stopSong();
-    eof_received = false;
-    track_started = false;
-    lyrics_service_clear();
-    status.elapsed_seconds = 0U;
-    status.duration_seconds = 0U;
-    status.state = PlayerState::Stopped;
-    status.error = PlayerError::None;
-    clear_spectrum();
-    Serial.println("[PLAYER] sleep timer expired, playback stopped");
-    publish(true);
+    PendingTransition transition = {};
+    transition.type = TransitionType::SleepStop;
+    request_transition(transition);
 }
 
 void apply_audio_settings(const AudioSettings &requested, bool persist,
@@ -247,7 +353,7 @@ void apply_audio_settings(const AudioSettings &requested, bool persist,
     status.treble_db = settings.treble_db;
     status.surround_depth = settings.surround_depth;
     status.sleep_timer_min = settings.sleep_timer_min;
-    audio.setVolume(status.volume);
+    apply_target_volume();
     if (codec_ready) {
         bsp_audio_apply_codec_settings(status.bass_db, status.treble_db,
                                        status.surround_depth);
@@ -436,7 +542,6 @@ bool start_track_once(uint16_t index) {
         return false;
     }
 
-    audio.stopSong();
     eof_received = false;
     clear_weather_recovery();
     clear_spectrum();
@@ -453,6 +558,7 @@ bool start_track_once(uint16_t index) {
     }
 
     (void)lyrics_service_load(bsp_storage_fs(), path);
+    set_output_volume(PLAYER_VOLUME_MIN);
     if (!audio.connecttoFS(bsp_storage_fs(), path)) {
         track_started = false;
         status.state = PlayerState::Error;
@@ -466,6 +572,7 @@ bool start_track_once(uint16_t index) {
     status.duration_seconds = 0;
     status.state = PlayerState::Playing;
     status.error = PlayerError::None;
+    begin_fade_in();
     Serial.printf("[PLAYER] playing %s\n", path);
     publish(true);
     return true;
@@ -473,9 +580,9 @@ bool start_track_once(uint16_t index) {
 
 bool restart_current_track(uint32_t resume_file_pos) {
     if (!sd_ready || !codec_ready || current_path[0] == '\0') return false;
-    audio.stopSong();
     eof_received = false;
     clear_spectrum();
+    set_output_volume(PLAYER_VOLUME_MIN);
     if (!audio.connecttoFS(bsp_storage_fs(), current_path, resume_file_pos)) {
         track_started = false;
         status.state = PlayerState::Error;
@@ -488,6 +595,7 @@ bool restart_current_track(uint32_t resume_file_pos) {
     track_started = true;
     status.state = PlayerState::Playing;
     status.error = PlayerError::None;
+    begin_fade_in();
     Serial.printf("[PLAYER] weather recovery resumed pos=%lu path=%s\n",
                   static_cast<unsigned long>(resume_file_pos), current_path);
     publish(true);
@@ -495,7 +603,6 @@ bool restart_current_track(uint32_t resume_file_pos) {
 }
 
 void set_no_playable_tracks() {
-    audio.stopSong();
     eof_received = false;
     track_started = false;
     clear_weather_recovery();
@@ -547,7 +654,6 @@ bool start_track_with_fallback(uint16_t index, int direction = 1,
 }
 
 void rescan_library(bool keep_stopped = false) {
-    audio.stopSong();
     track_started = false;
     eof_received = false;
     clear_weather_recovery();
@@ -605,7 +711,6 @@ void rescan_library(bool keep_stopped = false) {
 }
 
 void stop_for_storage() {
-    audio.stopSong();
     eof_received = false;
     track_started = false;
     clear_weather_recovery();
@@ -649,7 +754,8 @@ bool move_shuffle(int direction, uint16_t *index) {
 }
 
 bool move_track(int direction, bool play, bool automatic = false,
-                bool current_failed = false) {
+                bool current_failed = false,
+                uint16_t *target_playlist_track_index = nullptr) {
     if (status.playlist_track_count == 0) return false;
 
     uint16_t index = status.playlist_track_index;
@@ -667,8 +773,18 @@ bool move_track(int direction, bool play, bool automatic = false,
         index = static_cast<uint16_t>((status.playlist_track_index + count + direction) % count);
     }
 
+    if (target_playlist_track_index != nullptr) {
+        *target_playlist_track_index = index;
+    }
+
     if (play || track_started) {
-        return start_track_with_fallback(index, direction, !current_failed);
+        PendingTransition transition = {};
+        transition.type = TransitionType::StartTrack;
+        transition.track_index = index;
+        transition.direction = direction;
+        transition.reset_attempts = !current_failed;
+        request_transition(transition);
+        return true;
     }
     select_track(index);
     publish(true);
@@ -690,8 +806,11 @@ void handle_command(const PlayerCommand &command) {
                 status.playlist_track_count =
                     static_cast<uint16_t>(playlist_track_count);
                 const uint16_t index = command.playlist_track_index;
-                if (start_track_with_fallback(index) &&
-                    status.playback_mode == PlaybackMode::Shuffle) {
+                PendingTransition transition = {};
+                transition.type = TransitionType::StartTrack;
+                transition.track_index = index;
+                request_transition(transition);
+                if (status.playback_mode == PlaybackMode::Shuffle) {
                     build_shuffle(status.playlist_track_index);
                 }
             } else {
@@ -705,16 +824,24 @@ void handle_command(const PlayerCommand &command) {
         case PlayerCommandType::Toggle:
         {
             bool succeeded = false;
-            if (status.state == PlayerState::Playing || status.state == PlayerState::Paused) {
+            if (status.state == PlayerState::Playing) {
+                PendingTransition transition = {};
+                transition.type = TransitionType::Pause;
+                request_transition(transition);
+                succeeded = true;
+            } else if (status.state == PlayerState::Paused) {
                 if (audio.pauseResume()) {
-                    status.state = (status.state == PlayerState::Playing)
-                                       ? PlayerState::Paused : PlayerState::Playing;
-                    if (status.state == PlayerState::Paused) clear_spectrum();
+                    status.state = PlayerState::Playing;
+                    begin_fade_in();
                     publish(true);
                     succeeded = true;
                 }
             } else if (status.track_count > 0) {
-                succeeded = start_track_with_fallback(status.playlist_track_index);
+                PendingTransition transition = {};
+                transition.type = TransitionType::StartTrack;
+                transition.track_index = status.playlist_track_index;
+                request_transition(transition);
+                succeeded = true;
             }
             if (command.show_feedback) {
                 if (succeeded && !last_start_skipped) {
@@ -735,11 +862,16 @@ void handle_command(const PlayerCommand &command) {
             if (status.state == PlayerState::Paused) {
                 if (audio.pauseResume()) {
                     status.state = PlayerState::Playing;
+                    begin_fade_in();
                     publish(true);
                     succeeded = true;
                 }
             } else if (status.track_count > 0) {
-                succeeded = start_track_with_fallback(status.playlist_track_index);
+                PendingTransition transition = {};
+                transition.type = TransitionType::StartTrack;
+                transition.track_index = status.playlist_track_index;
+                request_transition(transition);
+                succeeded = true;
             }
             if (command.show_feedback) {
                 if (succeeded && !last_start_skipped) post_music_feedback(true, "播放");
@@ -751,10 +883,10 @@ void handle_command(const PlayerCommand &command) {
         case PlayerCommandType::Pause:
         {
             bool succeeded = false;
-            if ((status.state == PlayerState::Playing) && audio.pauseResume()) {
-                status.state = PlayerState::Paused;
-                clear_spectrum();
-                publish(true);
+            if (status.state == PlayerState::Playing) {
+                PendingTransition transition = {};
+                transition.type = TransitionType::Pause;
+                request_transition(transition);
                 succeeded = true;
             }
             if (command.show_feedback) {
@@ -764,9 +896,12 @@ void handle_command(const PlayerCommand &command) {
         }
         case PlayerCommandType::Previous:
         {
-            const bool succeeded = move_track(-1, true);
+            uint16_t target_index = status.playlist_track_index;
+            const bool succeeded = move_track(-1, true, false, false, &target_index);
             if (command.show_feedback) {
-                if (succeeded && !last_start_skipped) post_track_feedback(true, "上一曲");
+                if (succeeded && !last_start_skipped) {
+                    post_track_feedback(true, "上一曲", target_index);
+                }
                 else if (status.track_count == 0) post_music_feedback(true, "没有可播放歌曲");
                 else if (status.error == PlayerError::None) post_music_feedback(true, "上一曲失败");
             }
@@ -774,9 +909,12 @@ void handle_command(const PlayerCommand &command) {
         }
         case PlayerCommandType::Next:
         {
-            const bool succeeded = move_track(1, true);
+            uint16_t target_index = status.playlist_track_index;
+            const bool succeeded = move_track(1, true, false, false, &target_index);
             if (command.show_feedback) {
-                if (succeeded && !last_start_skipped) post_track_feedback(true, "下一曲");
+                if (succeeded && !last_start_skipped) {
+                    post_track_feedback(true, "下一曲", target_index);
+                }
                 else if (status.track_count == 0) post_music_feedback(true, "没有可播放歌曲");
                 else if (status.error == PlayerError::None) post_music_feedback(true, "下一曲失败");
             }
@@ -784,7 +922,7 @@ void handle_command(const PlayerCommand &command) {
         }
         case PlayerCommandType::SetVolume:
             status.volume = constrain(command.value, PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX);
-            audio.setVolume(status.volume);
+            apply_target_volume();
             persist_runtime_audio_settings();
             publish(true);
             post_volume_feedback(command.show_feedback, 0);
@@ -792,7 +930,7 @@ void handle_command(const PlayerCommand &command) {
         case PlayerCommandType::ChangeVolume:
             status.volume = constrain(static_cast<int>(status.volume) + command.value,
                                       PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX);
-            audio.setVolume(status.volume);
+            apply_target_volume();
             persist_runtime_audio_settings();
             publish(true);
             post_volume_feedback(command.show_feedback, command.value);
@@ -811,9 +949,94 @@ void handle_command(const PlayerCommand &command) {
                                  command.persist_audio_settings,
                                  command.restart_sleep_timer);
             break;
-        case PlayerCommandType::StopForStorage: stop_for_storage(); break;
-        case PlayerCommandType::RefreshLibraryStopped: rescan_library(true); break;
-        case PlayerCommandType::Rescan: rescan_library(); break;
+        case PlayerCommandType::StopForStorage:
+        {
+            PendingTransition transition = {};
+            transition.type = TransitionType::StopForStorage;
+            request_transition(transition);
+            break;
+        }
+        case PlayerCommandType::RefreshLibraryStopped:
+        {
+            PendingTransition transition = {};
+            transition.type = TransitionType::Rescan;
+            transition.keep_stopped = true;
+            request_transition(transition);
+            break;
+        }
+        case PlayerCommandType::Rescan:
+        {
+            PendingTransition transition = {};
+            transition.type = TransitionType::Rescan;
+            request_transition(transition);
+            break;
+        }
+    }
+}
+
+void stop_audio_pipeline() {
+    set_output_volume(PLAYER_VOLUME_MIN);
+    volume_fade.mode = FadeMode::None;
+    if (audio.isRunning() || track_started) {
+        audio.stopSong();
+    }
+    eof_received = false;
+    track_started = false;
+    clear_weather_recovery();
+    lyrics_service_clear();
+    clear_spectrum();
+}
+
+void finish_sleep_stop() {
+    status.elapsed_seconds = 0U;
+    status.duration_seconds = 0U;
+    status.state = PlayerState::Stopped;
+    status.error = PlayerError::None;
+    Serial.println("[PLAYER] sleep timer expired, playback stopped");
+    publish(true);
+}
+
+void service_transition() {
+    const bool fade_completed = service_volume_fade();
+    if (!transition_pending()) return;
+    if (volume_fade.mode != FadeMode::None && !fade_completed) return;
+
+    const PendingTransition transition = pending_transition;
+    pending_transition = {};
+    switch (transition.type) {
+        case TransitionType::StartTrack:
+            stop_audio_pipeline();
+            (void)start_track_with_fallback(transition.track_index,
+                                            transition.direction,
+                                            transition.reset_attempts);
+            break;
+        case TransitionType::Pause:
+            if (status.state == PlayerState::Playing && audio.isRunning() &&
+                audio.pauseResume()) {
+                status.state = PlayerState::Paused;
+                clear_spectrum();
+                publish(true);
+            }
+            break;
+        case TransitionType::StopForStorage:
+            stop_audio_pipeline();
+            stop_for_storage();
+            break;
+        case TransitionType::Rescan:
+            stop_audio_pipeline();
+            rescan_library(transition.keep_stopped);
+            break;
+        case TransitionType::SleepStop:
+            stop_audio_pipeline();
+            finish_sleep_stop();
+            break;
+        case TransitionType::RestartCurrentTrack:
+            stop_audio_pipeline();
+            (void)restart_current_track(transition.resume_file_pos);
+            break;
+        case TransitionType::None:
+        default:
+            break;
     }
 }
 }
@@ -874,7 +1097,7 @@ void player_task(void *parameter) {
             bsp_audio_apply_output_route(saved_audio_settings.amplifier_enabled);
         }
     }
-    audio.setVolume(status.volume);
+    set_output_volume(PLAYER_VOLUME_MIN);
     rescan_library();
 
     for (;;) {
@@ -884,15 +1107,16 @@ void player_task(void *parameter) {
         }
 
         service_sleep_timer();
+        service_transition();
 
         if (status.state == PlayerState::Playing) {
             audio.loop();
-            if (eof_received) {
+            if (!transition_pending() && eof_received) {
                 eof_received = false;
                 track_started = false;
                 clear_weather_recovery();
                 move_track(1, true, true);
-            } else if (track_started && !audio.isRunning()) {
+            } else if (!transition_pending() && track_started && !audio.isRunning()) {
                 const bool weather_busy = weather_sync_is_busy();
                 if (weather_busy || weather_recovery_pending) {
                     const uint32_t now = millis();
@@ -913,7 +1137,11 @@ void player_task(void *parameter) {
                     }
                     const uint32_t resume_pos = weather_recovery_file_pos;
                     clear_weather_recovery();
-                    if (resume_pos != 0U && restart_current_track(resume_pos)) {
+                    if (resume_pos != 0U) {
+                        PendingTransition transition = {};
+                        transition.type = TransitionType::RestartCurrentTrack;
+                        transition.resume_file_pos = resume_pos;
+                        request_transition(transition);
                         continue;
                     }
                 }

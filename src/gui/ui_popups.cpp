@@ -287,6 +287,7 @@ void ui_popups_service(UiPage current_page) {
 void ui_poetry_popup_dismiss() {
     if (!poetry_visible) return;
     poetry_visible = false;
+    ui_poetry_cache_release(visible_poetry);
     visible_poetry = nullptr;
     egui_view_set_visible(EGUI_VIEW_OF(&poetry_panel), 0);
     invalidate_region(UI_POETRY_PANEL_X, UI_POETRY_PANEL_Y,

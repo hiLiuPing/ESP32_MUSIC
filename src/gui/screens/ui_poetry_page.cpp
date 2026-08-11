@@ -10,7 +10,12 @@ PoetryCollection collection = PoetryCollection::Song3000;
 const UiPoetryCacheSlot *content = nullptr;
 
 void refresh_content() {
-    content = ui_poetry_cache_select(collection);
+    const UiPoetryCacheSlot *next = ui_poetry_cache_select(collection);
+    if (content != nullptr) {
+        ui_poetry_cache_release(content);
+        content = nullptr;
+    }
+    content = next;
 }
 
 void draw(egui_canvas_t *canvas) {
@@ -29,14 +34,16 @@ void draw(egui_canvas_t *canvas) {
 
 void init() { gui_egui_view_init(&view, egui_port_core(), draw); }
 void enter() { refresh_content(); }
-void exit() {}
+void exit() {
+    if (content != nullptr) {
+        ui_poetry_cache_release(content);
+        content = nullptr;
+    }
+}
 void navigation_changed(bool) {}
 
 bool key_consume(const KeyEvent &event) {
     if (event.id != KeyId::Middle || event.gesture != KeyGesture::Click) return false;
-    collection = collection == PoetryCollection::Song3000
-                     ? PoetryCollection::Song300
-                     : PoetryCollection::Song3000;
     refresh_content();
     return true;
 }
