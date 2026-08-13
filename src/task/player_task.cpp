@@ -1060,6 +1060,19 @@ void stop_audio_pipeline() {
     clear_spectrum();
 }
 
+void finish_track_and_advance(bool duration_fallback) {
+    const uint32_t elapsed = audio.getAudioCurrentTime();
+    const uint32_t duration = audio.getAudioFileDuration();
+    stop_audio_pipeline();
+    status.error = PlayerError::None;
+    Serial.printf("[PLAYER] %s for track %u elapsed=%lu duration=%lu, trying next\n",
+                  duration_fallback ? "duration fallback" : "EOF",
+                  static_cast<unsigned>(status.track_index),
+                  static_cast<unsigned long>(elapsed),
+                  static_cast<unsigned long>(duration));
+    move_track(1, true, true);
+}
+
 void finish_sleep_stop() {
     status.elapsed_seconds = 0U;
     status.duration_seconds = 0U;
@@ -1184,11 +1197,13 @@ void player_task(void *parameter) {
 
         if (status.state == PlayerState::Playing) {
             audio.loop();
-            if (!transition_pending() && eof_received) {
-                eof_received = false;
-                track_started = false;
-                clear_weather_recovery();
-                move_track(1, true, true);
+            const uint32_t elapsed = audio.getAudioCurrentTime();
+            const uint32_t duration = audio.getAudioFileDuration();
+            const bool duration_fallback =
+                duration > 0U && elapsed >= duration &&
+                (elapsed - duration) >= 1U;
+            if (!transition_pending() && (eof_received || duration_fallback)) {
+                finish_track_and_advance(duration_fallback);
             } else if (!transition_pending() && track_started && !audio.isRunning()) {
                 const bool weather_busy = weather_sync_is_busy();
                 if (weather_busy || weather_recovery_pending) {
@@ -1218,9 +1233,8 @@ void player_task(void *parameter) {
                         continue;
                     }
                 }
-                track_started = false;
+                stop_audio_pipeline();
                 status.error = PlayerError::DecodeStopped;
-                clear_spectrum();
                 Serial.printf("[PLAYER] decode stopped for track %u, trying next\n",
                               static_cast<unsigned>(status.track_index));
                 move_track(1, true, true, true);

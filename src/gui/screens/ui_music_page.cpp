@@ -6,6 +6,7 @@
 
 #include "app/lyrics_service.h"
 #include "app/music_library.h"
+#include "app/app_data.h"
 #include "gui/egui_port.h"
 #include "gui/gui_common.h"
 #include "gui/ui_heiti_font.h"
@@ -33,8 +34,10 @@ constexpr int16_t SPECTRUM_HEIGHT = 61;
 constexpr int16_t SPECTRUM_PEAK_HEIGHT = 2;
 constexpr int16_t PROGRESS_Y = 95;
 constexpr int16_t TIME_Y = 105;
-constexpr egui_region_t LYRIC_REGION = {{108, TIME_Y}, {152, 18}};
-constexpr egui_region_t TITLE_REGION = {{12, 1}, {360, 20}};
+constexpr egui_region_t TITLE_REGION = {{76, 1}, {236, 20}};
+constexpr egui_region_t TOP_STATUS_REGION = {{0, 0}, {384, 24}};
+constexpr egui_region_t TITLE_SCROLLER_REGION = {{76, 1}, {236, 20}};
+constexpr egui_region_t LYRIC_SCROLLER_REGION = {{72, TIME_Y}, {230, 18}};
 constexpr egui_region_t SPECTRUM_REGION = {{12, 23}, {360, 65}};
 constexpr egui_region_t PROGRESS_REGION = {{12, 91}, {360, 34}};
 constexpr egui_region_t CONTROLS_REGION = {{0, 128}, {384, 40}};
@@ -52,6 +55,10 @@ enum class MusicSubview : uint8_t {
 };
 
 GuiEguiView view;
+egui_view_group_t music_root;
+egui_view_lyric_scroller_t title_scroller;
+egui_view_lyric_scroller_t lyric_scroller;
+uint32_t last_app_status_version = 0U;
 PlayerStatus player_status = {};
 MusicSubview subview = MusicSubview::Main;
 bool navigation_active = false;
@@ -74,6 +81,7 @@ uint16_t playlist_glyph_track_count = 0U;
 uint32_t playlist_glyph_library_version = 0U;
 bool playlist_glyph_cache_full = false;
 char displayed_lyric[LYRICS_LINE_BUFFER_SIZE] = {};
+char displayed_title[PLAYER_NAME_LENGTH] = {};
 
 uint8_t spectrum_pixel_height(uint8_t level) {
     if (level == 0) return 0;
@@ -88,6 +96,42 @@ bool work_intersects(egui_canvas_t *canvas, const egui_region_t &region) {
            work->location.x + work->size.width > region.location.x &&
            work->location.y < region.location.y + region.size.height &&
            work->location.y + work->size.height > region.location.y;
+}
+
+void draw_music_battery(egui_canvas_t *canvas, const DataApp_HomeStatus_t *status) {
+    if (status == nullptr) return;
+    constexpr int16_t body_x = 326;
+    constexpr int16_t body_y = 6;
+    constexpr int16_t body_w = 20;
+    constexpr int16_t body_h = 12;
+    const egui_color_t color = (status->charging || status->charge_full)
+                                   ? EGUI_COLOR_HEX(0xFFD166)
+                                   : EGUI_COLOR_BLACK;
+    egui_canvas_draw_round_rectangle(canvas, body_x, body_y, body_w, body_h,
+                                     2, 1, color, EGUI_ALPHA_100);
+    egui_canvas_draw_rectangle_fill(canvas, body_x + body_w, body_y + 3, 3, 6,
+                                    color, EGUI_ALPHA_100);
+    const uint8_t percent = status->battery_valid ? std::min<uint8_t>(100U, status->battery_percent) : 0U;
+    if (percent > 0U) {
+        int16_t fill = static_cast<int16_t>((static_cast<uint16_t>(body_w - 4) * percent) / 100U);
+        if (fill == 0) fill = 1;
+        egui_canvas_draw_round_rectangle_fill(canvas, body_x + 2, body_y + 2,
+                                              fill, body_h - 4, 1,
+                                              color, EGUI_ALPHA_100);
+    }
+    char text[8] = {};
+    std::snprintf(text, sizeof(text), status->battery_valid ? "%u%%" : "--",
+                  static_cast<unsigned>(status->battery_percent));
+    egui_region_t region = {{351, 1}, {31, 22}};
+    egui_canvas_draw_text_in_rect(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
+                                  text, &region, EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER,
+                                  color, EGUI_ALPHA_100);
+}
+
+void update_main_widgets_visibility() {
+    const uint8_t visible = subview == MusicSubview::Main ? 1U : 0U;
+    egui_view_set_visible(EGUI_VIEW_OF(&title_scroller), visible);
+    egui_view_set_visible(EGUI_VIEW_OF(&lyric_scroller), visible);
 }
 
 const egui_font_t *music_font() {
@@ -117,6 +161,13 @@ bool refresh_displayed_lyric() {
         }
     }
     return changed;
+}
+
+void refresh_displayed_title() {
+    const char *title = player_status.file_name[0] == '\0'
+                            ? "MUSIC"
+                            : player_status.file_name;
+    std::snprintf(displayed_title, sizeof(displayed_title), "%s", title);
 }
 
 void draw_centered_text(egui_canvas_t *canvas, const egui_font_t *font,
@@ -292,11 +343,12 @@ const char *empty_state_message() {
 
 void draw_main(egui_canvas_t *canvas) {
     gui_draw_page_background(canvas);
-    if (work_intersects(canvas, TITLE_REGION)) {
-        const char *title = player_status.file_name[0] == '\0'
-                                ? "MUSIC"
-                                : player_status.file_name;
-        draw_centered_text(canvas, music_font(), title, 12, 1, 360, 20);
+    if (work_intersects(canvas, TOP_STATUS_REGION)) {
+        DataApp_HomeStatus_t app_status = {};
+        DataApp_HomeStatus_Get(&app_status);
+        egui_canvas_draw_text(canvas, music_font(), app_status.time_text,
+                              8, 2, EGUI_COLOR_BLACK, EGUI_ALPHA_100);
+        draw_music_battery(canvas, &app_status);
     }
 
     if (work_intersects(canvas, SPECTRUM_REGION)) {
@@ -350,18 +402,13 @@ void draw_main(egui_canvas_t *canvas) {
         char duration[12] = {};
         gui_format_time(player_status.elapsed_seconds, elapsed, sizeof(elapsed));
         gui_format_time(player_status.duration_seconds, duration, sizeof(duration));
-        egui_region_t elapsed_region = {{16, TIME_Y}, {100, 18}};
+        egui_region_t elapsed_region = {{16, TIME_Y}, {72, 18}};
         egui_canvas_draw_text_in_rect(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
                                       elapsed, &elapsed_region,
                                       EGUI_ALIGN_LEFT | EGUI_ALIGN_VCENTER,
                                       EGUI_COLOR_BLACK, EGUI_ALPHA_100);
         draw_right_text(canvas, EGUI_FONT_OF(&egui_res_font_montserrat_12_4),
-                        duration, 268, TIME_Y, 100, 18);
-        if (displayed_lyric[0] != '\0') {
-            draw_centered_text(canvas, lyric_font(), displayed_lyric,
-                               LYRIC_REGION.location.x, LYRIC_REGION.location.y,
-                               LYRIC_REGION.size.width, LYRIC_REGION.size.height);
-        }
+                        duration, 312, TIME_Y, 56, 18);
     }
 
     if (work_intersects(canvas, CONTROLS_REGION)) {
@@ -635,7 +682,29 @@ void init() {
         player_status.playback_mode = PlaybackMode::Shuffle;
         player_status.sleep_timer_min = AUDIO_SLEEP_TIMER_DEFAULT_MIN;
     }
+    egui_view_group_init(EGUI_VIEW_OF(&music_root), egui_port_core());
+    egui_view_set_size(EGUI_VIEW_OF(&music_root), EGUI_CONFIG_SCREEN_WIDTH,
+                       EGUI_CONFIG_SCREEN_HEIGHT);
     gui_egui_view_init(&view, egui_port_core(), draw);
+    egui_view_group_add_child(EGUI_VIEW_OF(&music_root), EGUI_VIEW_OF(&view));
+
+    egui_view_lyric_scroller_init(EGUI_VIEW_OF(&title_scroller), egui_port_core());
+    egui_region_t title_region = TITLE_SCROLLER_REGION;
+    egui_view_layout(EGUI_VIEW_OF(&title_scroller), &title_region);
+    egui_view_lyric_scroller_set_font(EGUI_VIEW_OF(&title_scroller), music_font());
+    egui_view_lyric_scroller_set_scroll_step(EGUI_VIEW_OF(&title_scroller), 1);
+    egui_view_lyric_scroller_set_interval_ms(EGUI_VIEW_OF(&title_scroller), 50);
+    egui_view_lyric_scroller_set_pause_duration_ms(EGUI_VIEW_OF(&title_scroller), 500);
+    egui_view_group_add_child(EGUI_VIEW_OF(&music_root), EGUI_VIEW_OF(&title_scroller));
+
+    egui_view_lyric_scroller_init(EGUI_VIEW_OF(&lyric_scroller), egui_port_core());
+    egui_region_t lyric_region = LYRIC_SCROLLER_REGION;
+    egui_view_layout(EGUI_VIEW_OF(&lyric_scroller), &lyric_region);
+    egui_view_lyric_scroller_set_font(EGUI_VIEW_OF(&lyric_scroller), lyric_font());
+    egui_view_lyric_scroller_set_scroll_step(EGUI_VIEW_OF(&lyric_scroller), 1);
+    egui_view_lyric_scroller_set_interval_ms(EGUI_VIEW_OF(&lyric_scroller), 50);
+    egui_view_lyric_scroller_set_pause_duration_ms(EGUI_VIEW_OF(&lyric_scroller), 500);
+    egui_view_group_add_child(EGUI_VIEW_OF(&music_root), EGUI_VIEW_OF(&lyric_scroller));
 }
 
 void enter() {
@@ -662,6 +731,11 @@ void enter() {
     }
     last_spectrum_frame_ms = millis();
     (void)refresh_displayed_lyric();
+    refresh_displayed_title();
+    egui_view_lyric_scroller_set_text(EGUI_VIEW_OF(&title_scroller), displayed_title);
+    egui_view_lyric_scroller_set_text(EGUI_VIEW_OF(&lyric_scroller), displayed_lyric);
+    update_main_widgets_visibility();
+    last_app_status_version = 0U;
 }
 
 void exit() {
@@ -670,6 +744,8 @@ void exit() {
     std::memset(spectrum_peaks, 0, sizeof(spectrum_peaks));
     std::memset(spectrum_peak_ticks, 0, sizeof(spectrum_peak_ticks));
     displayed_lyric[0] = '\0';
+    displayed_title[0] = '\0';
+    update_main_widgets_visibility();
 }
 
 void navigation_changed(bool active) {
@@ -749,6 +825,7 @@ void execute_control() {
     switch (selected_control) {
         case CONTROL_VOLUME:
             subview = MusicSubview::Volume;
+            update_main_widgets_visibility();
             break;
         case CONTROL_MODE:
             (void)task_post_player_command(PlayerCommandType::CyclePlaybackMode);
@@ -776,6 +853,7 @@ void execute_control() {
             visible_track_start = 0;
             clamp_playlist_window();
             subview = MusicSubview::Playlists;
+            update_main_widgets_visibility();
             break;
         case CONTROL_SETTINGS:
             audio_saved = AudioSettings{player_status.volume, player_status.playback_mode,
@@ -786,6 +864,7 @@ void execute_control() {
             audio_selected = 0U;
             audio_editing = false;
             subview = MusicSubview::AudioSettingsPage;
+            update_main_widgets_visibility();
             break;
         default:
             break;
@@ -853,6 +932,7 @@ bool key_consume(const KeyEvent &event) {
                                           ? CONTROL_PLAYLIST
                                           : CONTROL_SETTINGS);
             subview = MusicSubview::Main;
+            update_main_widgets_visibility();
         }
         return true;
     }
@@ -929,6 +1009,14 @@ bool key_consume(const KeyEvent &event) {
 }
 
 bool service() {
+    if (subview == MusicSubview::Main) {
+        DataApp_HomeStatus_t app_status = {};
+        DataApp_HomeStatus_Get(&app_status);
+        if (app_status.version != last_app_status_version) {
+            last_app_status_version = app_status.version;
+            egui_view_invalidate_region(EGUI_VIEW_OF(&view), &TOP_STATUS_REGION);
+        }
+    }
     const uint32_t now = millis();
     if (now - last_spectrum_frame_ms < SPECTRUM_FRAME_MS) {
         return false;
@@ -1019,6 +1107,16 @@ bool update_status(const PlayerStatus &status) {
     const PlayerStatus previous = player_status;
     player_status = status;
     const bool lyric_changed = refresh_displayed_lyric();
+    if (subview == MusicSubview::Main) {
+        if (previous.file_name[0] != status.file_name[0] ||
+            std::strcmp(previous.file_name, status.file_name) != 0) {
+            refresh_displayed_title();
+            egui_view_lyric_scroller_set_text(EGUI_VIEW_OF(&title_scroller), displayed_title);
+        }
+        if (lyric_changed) {
+            egui_view_lyric_scroller_set_text(EGUI_VIEW_OF(&lyric_scroller), displayed_lyric);
+        }
+    }
     if (previous.library_version != status.library_version ||
         previous.track_count != status.track_count) {
         reset_playlist_glyph_prefetch();
@@ -1074,7 +1172,7 @@ bool update_status(const PlayerStatus &status) {
 
 GuiPageDescriptor descriptor = {
     UiPage::Music, init, enter, exit, key_consume, service, update_status,
-    EGUI_VIEW_OF(&view), "music", true, false, navigation_changed,
+    EGUI_VIEW_OF(&music_root), "music", true, false, navigation_changed,
 };
 }
 
