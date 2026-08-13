@@ -705,6 +705,7 @@ void init() {
     egui_view_lyric_scroller_set_interval_ms(EGUI_VIEW_OF(&lyric_scroller), 50);
     egui_view_lyric_scroller_set_pause_duration_ms(EGUI_VIEW_OF(&lyric_scroller), 500);
     egui_view_group_add_child(EGUI_VIEW_OF(&music_root), EGUI_VIEW_OF(&lyric_scroller));
+    egui_view_calculate_layout(EGUI_VIEW_OF(&music_root));
 }
 
 void enter() {
@@ -1108,10 +1109,17 @@ bool update_status(const PlayerStatus &status) {
     player_status = status;
     const bool lyric_changed = refresh_displayed_lyric();
     if (subview == MusicSubview::Main) {
-        if (previous.file_name[0] != status.file_name[0] ||
-            std::strcmp(previous.file_name, status.file_name) != 0) {
+        const bool track_changed =
+            previous.track_index != status.track_index ||
+            previous.playlist_index != status.playlist_index ||
+            previous.playlist_track_index != status.playlist_track_index ||
+            std::strcmp(previous.file_name, status.file_name) != 0;
+        if (track_changed) {
             refresh_displayed_title();
+            update_main_widgets_visibility();
             egui_view_lyric_scroller_set_text(EGUI_VIEW_OF(&title_scroller), displayed_title);
+            egui_view_lyric_scroller_restart(EGUI_VIEW_OF(&title_scroller));
+            egui_view_invalidate_region(EGUI_VIEW_OF(&view), &TITLE_REGION);
         }
         if (lyric_changed) {
             egui_view_lyric_scroller_set_text(EGUI_VIEW_OF(&lyric_scroller), displayed_lyric);
