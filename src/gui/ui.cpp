@@ -8,6 +8,7 @@
 #include "gui/screens/ui_music_page.h"
 #include "gui/screens/ui_setting_page.h"
 #include "gui/screens/ui_poetry_page.h"
+#include "gui/screens/ui_file_browser_page.h"
 #include "gui/ui_popups.h"
 #include "gui/ui_heiti_font.h"
 #include "app/settings_app.h"
@@ -28,6 +29,7 @@ void gui_init() {
         &ui_music_page_descriptor(),
         &ui_poetry_page_descriptor(),
         &ui_setting_page_descriptor(),
+        &ui_file_browser_page_descriptor(),
     };
     for (GuiPageDescriptor *page : pages) {
         if (!gui_page_manager_register(page)) {

@@ -10,7 +10,7 @@
 #include "gui/ui_popups.h"
 
 namespace {
-constexpr size_t MAX_PAGES = 6;
+constexpr size_t MAX_PAGES = 7;
 constexpr size_t HISTORY_DEPTH = 8;
 
 GuiPageDescriptor *registered_pages[MAX_PAGES] = {};
@@ -162,6 +162,8 @@ bool switch_page(GuiPageDescriptor *target, bool record_history, int8_t directio
         egui_view_set_visible(previous_page->view, 1);
     }
     current_page = target;
+    // The file browser is entered from the music toolbar and immediately owns keys.
+    internal_navigation = current_page->id == UiPage::FileBrowser;
     if (current_page->id == UiPage::Home) {
         history_size = 0;
     }
@@ -169,7 +171,7 @@ bool switch_page(GuiPageDescriptor *target, bool record_history, int8_t directio
         current_page->enter();
     }
     if (current_page->navigation_changed != nullptr) {
-        current_page->navigation_changed(false);
+        current_page->navigation_changed(internal_navigation);
     }
     egui_view_set_position(current_page->view,
                            previous_page == nullptr

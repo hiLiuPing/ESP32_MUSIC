@@ -9,12 +9,13 @@
 #include "app/app_data.h"
 #include "gui/egui_port.h"
 #include "gui/gui_common.h"
+#include "gui/page_manager.h"
 #include "gui/ui_heiti_font.h"
 #include "task/task_system.h"
 
 namespace {
 constexpr uint8_t CONTROL_COUNT = 7;
-constexpr uint8_t CONTROL_VOLUME = 0;
+constexpr uint8_t CONTROL_FILE_BROWSER = 0;
 constexpr uint8_t CONTROL_MODE = 1;
 constexpr uint8_t CONTROL_PREVIOUS = 2;
 constexpr uint8_t CONTROL_PLAY = 3;
@@ -197,25 +198,24 @@ void draw_right_text(egui_canvas_t *canvas, const egui_font_t *font,
                                   color, EGUI_ALPHA_100);
 }
 
+void draw_folder_icon(egui_canvas_t *canvas, int16_t cx, int16_t cy,
+                      egui_color_t color) {
+    egui_canvas_draw_rectangle(canvas, cx - 10, cy - 5, 20, 13, 2, color, EGUI_ALPHA_100);
+    egui_canvas_draw_rectangle_fill(canvas, cx - 9, cy - 8, 9, 4, color, EGUI_ALPHA_100);
+}
+
 void draw_speaker_icon(egui_canvas_t *canvas, int16_t cx, int16_t cy,
                        egui_color_t color) {
     egui_canvas_draw_rectangle_fill(canvas, cx - 9, cy - 4, 5, 8,
                                     color, EGUI_ALPHA_100);
     egui_canvas_draw_triangle_fill(canvas, cx - 4, cy - 5, cx + 2, cy - 10,
                                    cx + 2, cy + 10, color, EGUI_ALPHA_100);
-    if (player_status.volume == 0) {
-        egui_canvas_draw_line(canvas, cx + 5, cy - 5, cx + 12, cy + 5, 2,
-                              color, EGUI_ALPHA_100);
-        egui_canvas_draw_line(canvas, cx + 12, cy - 5, cx + 5, cy + 5, 2,
-                              color, EGUI_ALPHA_100);
-    } else {
-        egui_canvas_draw_line(canvas, cx + 6, cy - 6, cx + 10, cy - 2, 2,
-                              color, EGUI_ALPHA_100);
-        egui_canvas_draw_line(canvas, cx + 10, cy - 2, cx + 10, cy + 2, 2,
-                              color, EGUI_ALPHA_100);
-        egui_canvas_draw_line(canvas, cx + 10, cy + 2, cx + 6, cy + 6, 2,
-                              color, EGUI_ALPHA_100);
-    }
+    egui_canvas_draw_line(canvas, cx + 6, cy - 6, cx + 10, cy - 2, 2,
+                          color, EGUI_ALPHA_100);
+    egui_canvas_draw_line(canvas, cx + 10, cy - 2, cx + 10, cy + 2, 2,
+                          color, EGUI_ALPHA_100);
+    egui_canvas_draw_line(canvas, cx + 10, cy + 2, cx + 6, cy + 6, 2,
+                          color, EGUI_ALPHA_100);
 }
 
 void draw_repeat_icon(egui_canvas_t *canvas, int16_t cx, int16_t cy,
@@ -323,7 +323,7 @@ void draw_control(egui_canvas_t *canvas, uint8_t index) {
     }
     const egui_color_t color = focused ? EGUI_COLOR_WHITE : EGUI_COLOR_BLACK;
     switch (index) {
-        case CONTROL_VOLUME: draw_speaker_icon(canvas, cx, cy, color); break;
+        case CONTROL_FILE_BROWSER: draw_folder_icon(canvas, cx, cy, color); break;
         case CONTROL_MODE: draw_repeat_icon(canvas, cx, cy, color); break;
         case CONTROL_PREVIOUS: draw_skip_icon(canvas, cx, cy, false, color); break;
         case CONTROL_PLAY: draw_play_icon(canvas, cx, cy, color); break;
@@ -824,9 +824,8 @@ void reset_playlist_glyph_prefetch() {
 
 void execute_control() {
     switch (selected_control) {
-        case CONTROL_VOLUME:
-            subview = MusicSubview::Volume;
-            update_main_widgets_visibility();
+        case CONTROL_FILE_BROWSER:
+            gui_page_goto(UiPage::FileBrowser);
             break;
         case CONTROL_MODE:
             (void)task_post_player_command(PlayerCommandType::CyclePlaybackMode);
@@ -928,7 +927,7 @@ bool key_consume(const KeyEvent &event) {
             subview = MusicSubview::Playlists;
         } else {
             selected_control = subview == MusicSubview::Volume
-                                   ? CONTROL_VOLUME
+                                   ? CONTROL_FILE_BROWSER
                                    : (subview == MusicSubview::Playlists
                                           ? CONTROL_PLAYLIST
                                           : CONTROL_SETTINGS);

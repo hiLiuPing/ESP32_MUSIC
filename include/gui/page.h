@@ -13,6 +13,7 @@ enum class UiPage : uint8_t {
     Read,
     Setting,
     Poetry,
+    FileBrowser,
 };
 
 struct GuiPageDescriptor {

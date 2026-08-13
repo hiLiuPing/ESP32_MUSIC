@@ -35,4 +35,5 @@ bool task_post_player_selection(uint16_t playlist_index,
                                 uint16_t playlist_track_index);
 bool task_post_player_audio_settings(const AudioSettings &settings, bool persist,
                                      bool restart_sleep_timer = false);
+bool task_post_player_path(const char *path, bool show_feedback = true);
 void task_publish_player_status(const PlayerStatus &status);

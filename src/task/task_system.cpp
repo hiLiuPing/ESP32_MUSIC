@@ -1,6 +1,7 @@
 #include "task/task_system.h"
 
 #include <Arduino.h>
+#include <cstring>
 
 #include "app/app_data.h"
 #include "app/home_demo.h"
@@ -83,7 +84,7 @@ void task_system_init() {
                  "Player");
     require_task(xTaskCreate(user_AppDataTask, "AppData", 3072, nullptr, 2, nullptr),
                  "AppData");
-    require_task(xTaskCreatePinnedToCore(gui_task, "Gui", 12288, nullptr, 2, nullptr, 0),
+    require_task(xTaskCreatePinnedToCore(gui_task, "Gui", 32768, nullptr, 2, nullptr, 0),
                  "Gui");
     require_task(xTaskCreate(file_manager_task, "FileManager", 12288, nullptr, 1,
                              &FileManagerTaskHandle),
@@ -141,6 +142,19 @@ bool task_post_player_audio_settings(const AudioSettings &settings, bool persist
     if (!posted) {
         Serial.println("[PLAYER] audio settings command queue full");
     }
+    return posted;
+}
+
+bool task_post_player_path(const char *path, bool show_feedback) {
+    if (path == nullptr || path[0] != '/') return false;
+    PlayerCommand command = {};
+    command.type = PlayerCommandType::PlayPath;
+    command.show_feedback = show_feedback;
+    std::strncpy(command.path, path, sizeof(command.path) - 1U);
+    const bool posted = (PlayerCommandQueue != nullptr) &&
+                        (xQueueSend(PlayerCommandQueue, &command,
+                                    pdMS_TO_TICKS(20)) == pdTRUE);
+    if (!posted) Serial.println("[PLAYER] path command queue full");
     return posted;
 }
 

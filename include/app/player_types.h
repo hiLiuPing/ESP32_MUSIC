@@ -66,6 +66,7 @@ enum class PlayerCommandType : uint8_t {
     StopForStorage,
     RefreshLibraryStopped,
     Rescan,
+    PlayPath,
 };
 
 struct PlayerCommand {
@@ -77,6 +78,7 @@ struct PlayerCommand {
     bool persist_audio_settings;
     bool restart_sleep_timer;
     bool show_feedback;
+    char path[PLAYER_PATH_LENGTH];
 };
 
 struct PlayerStatus {

@@ -34,6 +34,7 @@ constexpr float SPECTRUM_ENERGY_EPS = 1.0e-12F;
 constexpr float SPECTRUM_LOG_GAIN = 2048.0F;
 constexpr float SPECTRUM_SILENCE_RMS = 1.0e-5F;
 constexpr uint8_t SPECTRUM_RELEASE_PER_FRAME = 12U;
+constexpr size_t DIRECT_AUDIO_MAX = 64U;
 
 Audio audio;
 volatile bool eof_received = false;
@@ -70,6 +71,7 @@ enum class TransitionType : uint8_t {
     Rescan,
     SleepStop,
     RestartCurrentTrack,
+    StartDirectTrack,
 };
 
 struct PendingTransition {
@@ -102,6 +104,10 @@ uint16_t shuffle_count = 0;
 uint16_t shuffle_cursor = 0;
 uint8_t attempted_tracks[(PLAYER_MAX_TRACKS + 7U) / 8U] = {};
 char current_path[PLAYER_PATH_LENGTH] = {};
+char direct_audio_paths[DIRECT_AUDIO_MAX][PLAYER_PATH_LENGTH] = {};
+uint16_t direct_audio_count = 0U;
+uint16_t direct_audio_index = 0U;
+bool direct_audio_mode = false;
 
 void publish(bool force = false);
 void clear_spectrum();
@@ -386,6 +392,88 @@ void clear_spectrum() {
     spectrum_sample_count = 0U;
     spectrum_peak_level = SPECTRUM_MIN_PEAK;
     last_spectrum_tick = 0;
+}
+
+bool supported_audio_path(const char *path) {
+    constexpr const char *extensions[] = {".mp3", ".aac", ".m4a", ".wav", ".flac"};
+    for (const char *extension : extensions) {
+        if (ends_with_ignore_case(path, extension)) return true;
+    }
+    return false;
+}
+
+const char *path_name(const char *path) {
+    const char *slash = path == nullptr ? nullptr : std::strrchr(path, '/');
+    return slash == nullptr ? (path == nullptr ? "" : path) : slash + 1;
+}
+
+void clear_direct_audio() {
+    direct_audio_count = 0U;
+    direct_audio_index = 0U;
+    direct_audio_mode = false;
+    std::memset(direct_audio_paths, 0, sizeof(direct_audio_paths));
+}
+
+void scan_direct_audio(const char *directory_path) {
+    clear_direct_audio();
+    if (!sd_ready || directory_path == nullptr) return;
+    File directory = bsp_storage_fs().open(directory_path, FILE_READ);
+    if (!directory || !directory.isDirectory()) { directory.close(); return; }
+    for (File entry = directory.openNextFile(FILE_READ);
+         entry && direct_audio_count < DIRECT_AUDIO_MAX;
+         entry = directory.openNextFile(FILE_READ)) {
+        if (!entry.isDirectory() && supported_audio_path(entry.path())) {
+            std::snprintf(direct_audio_paths[direct_audio_count], PLAYER_PATH_LENGTH,
+                          "%s", entry.path());
+            ++direct_audio_count;
+        }
+        entry.close();
+    }
+    directory.close();
+    for (uint16_t i = 0U; i < direct_audio_count; ++i) {
+        for (uint16_t j = static_cast<uint16_t>(i + 1U); j < direct_audio_count; ++j) {
+            if (strcasecmp(direct_audio_paths[i], direct_audio_paths[j]) > 0) {
+                char temporary[PLAYER_PATH_LENGTH] = {};
+                std::memcpy(temporary, direct_audio_paths[i], sizeof(temporary));
+                std::memcpy(direct_audio_paths[i], direct_audio_paths[j], sizeof(temporary));
+                std::memcpy(direct_audio_paths[j], temporary, sizeof(temporary));
+            }
+        }
+    }
+}
+
+bool start_direct_track(uint16_t index) {
+    if (index >= direct_audio_count) return false;
+    const char *path = direct_audio_paths[index];
+    File file = bsp_storage_fs().open(path, FILE_READ);
+    const bool valid = file && !file.isDirectory();
+    file.close();
+    if (!valid || !supported_audio_path(path)) return false;
+    if (ends_with_ignore_case(path, ".flac") && !audio_input_uses_psram) return false;
+    direct_audio_index = index;
+    std::snprintf(current_path, sizeof(current_path), "%s", path);
+    std::snprintf(status.file_name, sizeof(status.file_name), "%s", path_name(path));
+    lyrics_service_clear();
+    if (!lyrics_service_load(bsp_storage_fs(), path)) { /* optional */ }
+    set_output_volume(PLAYER_VOLUME_MIN);
+    if (!audio.connecttoFS(bsp_storage_fs(), path)) {
+        status.state = PlayerState::Error;
+        status.error = PlayerError::OpenFailed;
+        publish(true);
+        return false;
+    }
+    track_started = true;
+    eof_received = false;
+    clear_spectrum();
+    status.state = PlayerState::Playing;
+    status.error = PlayerError::None;
+    status.track_count = direct_audio_count;
+    status.track_index = direct_audio_index;
+    status.playlist_track_index = direct_audio_index;
+    status.playlist_track_count = direct_audio_count;
+    begin_fade_in();
+    publish(true);
+    return true;
 }
 
 void publish(bool force) {
@@ -727,6 +815,7 @@ bool start_track_with_fallback(uint16_t index, int direction = 1,
 }
 
 void rescan_library(bool keep_stopped = false) {
+    clear_direct_audio();
     track_started = false;
     eof_received = false;
     clear_weather_recovery();
@@ -864,6 +953,17 @@ bool move_track(int direction, bool play, bool automatic = false,
     return true;
 }
 
+bool move_direct_track(int direction) {
+    if (!direct_audio_mode || direct_audio_count == 0U) return false;
+    const uint16_t next = static_cast<uint16_t>((static_cast<int>(direct_audio_index) +
+        direct_audio_count + direction) % direct_audio_count);
+    PendingTransition transition = {};
+    transition.type = TransitionType::StartDirectTrack;
+    transition.track_index = next;
+    request_transition(transition);
+    return true;
+}
+
 void handle_command(const PlayerCommand &command) {
     last_start_skipped = false;
     switch (command.type) {
@@ -874,6 +974,8 @@ void handle_command(const PlayerCommand &command) {
                 command.playlist_index, nullptr, 0U, &playlist_track_count);
             if (playlist_valid &&
                 command.playlist_track_index < playlist_track_count) {
+                clear_direct_audio();
+                status.track_count = static_cast<uint16_t>(music_library_count());
                 status.playlist_index = command.playlist_index;
                 status.playlist_track_index = command.playlist_track_index;
                 status.playlist_track_count =
@@ -911,7 +1013,8 @@ void handle_command(const PlayerCommand &command) {
                 }
             } else if (status.track_count > 0) {
                 PendingTransition transition = {};
-                transition.type = TransitionType::StartTrack;
+                transition.type = direct_audio_mode ? TransitionType::StartDirectTrack :
+                                                     TransitionType::StartTrack;
                 transition.track_index = status.playlist_track_index;
                 request_transition(transition);
                 succeeded = true;
@@ -941,7 +1044,8 @@ void handle_command(const PlayerCommand &command) {
                 }
             } else if (status.track_count > 0) {
                 PendingTransition transition = {};
-                transition.type = TransitionType::StartTrack;
+                transition.type = direct_audio_mode ? TransitionType::StartDirectTrack :
+                                                     TransitionType::StartTrack;
                 transition.track_index = status.playlist_track_index;
                 request_transition(transition);
                 succeeded = true;
@@ -970,7 +1074,8 @@ void handle_command(const PlayerCommand &command) {
         case PlayerCommandType::Previous:
         {
             uint16_t target_index = status.playlist_track_index;
-            const bool succeeded = move_track(-1, true, false, false, &target_index);
+            const bool succeeded = direct_audio_mode ? move_direct_track(-1) :
+                move_track(-1, true, false, false, &target_index);
             if (command.show_feedback) {
                 if (succeeded && !last_start_skipped) {
                     post_track_feedback(true, "上一曲", target_index);
@@ -983,7 +1088,8 @@ void handle_command(const PlayerCommand &command) {
         case PlayerCommandType::Next:
         {
             uint16_t target_index = status.playlist_track_index;
-            const bool succeeded = move_track(1, true, false, false, &target_index);
+            const bool succeeded = direct_audio_mode ? move_direct_track(1) :
+                move_track(1, true, false, false, &target_index);
             if (command.show_feedback) {
                 if (succeeded && !last_start_skipped) {
                     post_track_feedback(true, "下一曲", target_index);
@@ -1044,6 +1150,37 @@ void handle_command(const PlayerCommand &command) {
             request_transition(transition);
             break;
         }
+        case PlayerCommandType::PlayPath:
+        {
+            if (!sd_ready || command.path[0] != '/' || !supported_audio_path(command.path)) {
+                status.state = PlayerState::Error;
+                status.error = PlayerError::OpenFailed;
+                publish(true);
+                break;
+            }
+            char directory[PLAYER_PATH_LENGTH] = {};
+            std::snprintf(directory, sizeof(directory), "%s", command.path);
+            char *slash = std::strrchr(directory, '/');
+            if (slash == nullptr) break;
+            if (slash == directory) directory[1] = '\0'; else *slash = '\0';
+            scan_direct_audio(directory);
+            for (uint16_t index = 0U; index < direct_audio_count; ++index) {
+                if (std::strcmp(direct_audio_paths[index], command.path) == 0) {
+                    direct_audio_mode = true;
+                    PendingTransition transition = {};
+                    transition.type = TransitionType::StartDirectTrack;
+                    transition.track_index = index;
+                    request_transition(transition);
+                    break;
+                }
+            }
+            if (!direct_audio_mode) {
+                status.state = PlayerState::Error;
+                status.error = PlayerError::OpenFailed;
+                publish(true);
+            }
+            break;
+        }
     }
 }
 
@@ -1070,7 +1207,8 @@ void finish_track_and_advance(bool duration_fallback) {
                   static_cast<unsigned>(status.track_index),
                   static_cast<unsigned long>(elapsed),
                   static_cast<unsigned long>(duration));
-    move_track(1, true, true);
+    if (direct_audio_mode) (void)move_direct_track(1);
+    else (void)move_track(1, true, true);
 }
 
 void finish_sleep_stop() {
@@ -1119,6 +1257,10 @@ void service_transition() {
         case TransitionType::RestartCurrentTrack:
             stop_audio_pipeline();
             (void)restart_current_track(transition.resume_file_pos);
+            break;
+        case TransitionType::StartDirectTrack:
+            stop_audio_pipeline();
+            (void)start_direct_track(transition.track_index);
             break;
         case TransitionType::None:
         default:
