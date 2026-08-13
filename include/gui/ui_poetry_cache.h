@@ -29,7 +29,6 @@ struct UiPoetryCacheSlot {
     uint32_t content_hash;
     bool valid;
     bool in_use;
-    bool consumed;
     char title[128];
     char body[3072];
     const char *lines[UI_POETRY_MAX_LINES];

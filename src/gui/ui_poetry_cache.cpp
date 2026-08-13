@@ -29,33 +29,11 @@ enum class PrepareFailure : uint8_t {
     Count,
 };
 
-bool batch_ready() {
-    if (slots == nullptr) return false;
-    for (uint8_t index = 0U; index < UI_POETRY_CACHE_SLOT_COUNT; ++index) {
-        if (!slots[index].valid) return false;
-    }
-    return true;
-}
-
-bool batch_consumed() {
-    if (!batch_ready()) return false;
-    for (uint8_t index = 0U; index < UI_POETRY_CACHE_SLOT_COUNT; ++index) {
-        if (!slots[index].consumed || slots[index].in_use) return false;
-    }
-    return true;
-}
-
-void reset_batch() {
-    for (uint8_t index = 0U; index < UI_POETRY_CACHE_SLOT_COUNT; ++index) {
-        slots[index].valid = false;
-        slots[index].in_use = false;
-        slots[index].consumed = false;
-        slots[index].content_hash = 0U;
-        slots[index].line_count = 0U;
-    }
-    next_slot = 0U;
-    std::memset(selection_cursor, 0, sizeof(selection_cursor));
-    next_attempt_ms = 0U;
+void clear_slot(UiPoetryCacheSlot &slot) {
+    slot.valid = false;
+    slot.in_use = false;
+    slot.content_hash = 0U;
+    slot.line_count = 0U;
 }
 
 uint8_t utf8_bytes(const char *text) {
@@ -188,10 +166,7 @@ bool layout_body(UiPoetryCacheSlot &slot, const char *source) {
 bool prepare_slot(UiPoetryCacheSlot &slot, const PoetryEntry &entry,
                   PrepareFailure *failure) {
     if (failure != nullptr) *failure = PrepareFailure::None;
-    slot.valid = false;
-    slot.in_use = false;
-    slot.consumed = false;
-    slot.line_count = 0U;
+    clear_slot(slot);
     if (!entry.valid || entry.title == nullptr || entry.body == nullptr) {
         if (failure != nullptr) *failure = PrepareFailure::Invalid;
         return false;
@@ -328,7 +303,7 @@ const UiPoetryCacheSlot *ui_poetry_cache_select(PoetryCollection collection) {
     for (uint8_t offset = 0U; offset < UI_POETRY_CACHE_SLOT_COUNT; ++offset) {
         const uint8_t index = static_cast<uint8_t>(
             (selection_cursor[ci] + offset) % UI_POETRY_CACHE_SLOT_COUNT);
-        if (slots[index].valid && !slots[index].in_use && !slots[index].consumed &&
+        if (slots[index].valid && !slots[index].in_use &&
             slots[index].collection == collection) {
             slots[index].in_use = true;
             selection_cursor[ci] = static_cast<uint8_t>(
@@ -344,9 +319,7 @@ void ui_poetry_cache_release(const UiPoetryCacheSlot *slot) {
     for (uint8_t index = 0U; index < UI_POETRY_CACHE_SLOT_COUNT; ++index) {
         if (slot != &slots[index]) continue;
         if (!slots[index].valid || !slots[index].in_use) return;
-        slots[index].in_use = false;
-        slots[index].consumed = true;
-        if (batch_consumed()) reset_batch();
+        clear_slot(slots[index]);
         return;
     }
 }
@@ -355,7 +328,7 @@ size_t ui_poetry_cache_ready_count(PoetryCollection collection) {
     size_t count = 0U;
     if (slots == nullptr) return count;
     for (uint8_t i = 0U; i < UI_POETRY_CACHE_SLOT_COUNT; ++i) {
-        if (slots[i].valid && !slots[i].in_use && !slots[i].consumed &&
+        if (slots[i].valid && !slots[i].in_use &&
             slots[i].collection == collection) ++count;
     }
     return count;
