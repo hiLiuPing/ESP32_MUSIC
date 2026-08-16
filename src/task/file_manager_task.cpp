@@ -1,5 +1,7 @@
 #include "task/file_manager_task.h"
 
+#include <freertos/task.h>
+
 #include "app/file_manager_network.h"
 #include "app/system_notify.h"
 #include "task/task_system.h"
@@ -42,6 +44,9 @@ void file_manager_task(void *parameter) {
     (void)xEventGroupWaitBits(HardwareEventGroup, HW_EVENT_INIT_DONE,
                               pdFALSE, pdTRUE, portMAX_DELAY);
     file_manager_network_init();
+#if PROJECT_TASK_STACK_DEBUG
+    uint32_t last_stack_log_ms = millis();
+#endif
 
     for (;;) {
         uint32_t request = 0U;
@@ -57,6 +62,14 @@ void file_manager_task(void *parameter) {
             }
         }
         file_manager_network_process_ap();
+#if PROJECT_TASK_STACK_DEBUG
+        const uint32_t now = millis();
+        if (now - last_stack_log_ms >= 5000U) {
+            last_stack_log_ms = now;
+            Serial.printf("[STACK] FileManager free=%u bytes\n",
+                          static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+        }
+#endif
     }
 }
 

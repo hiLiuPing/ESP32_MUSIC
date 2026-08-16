@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <freertos/task.h>
 
 #include "app/settings_app.h"
 #include "bsp/bsp_display.h"
@@ -25,6 +26,9 @@ void gui_task(void *parameter) {
 
     uint32_t last_input_ms = millis();
     uint32_t last_slow_poll_log_ms = 0U;
+#if PROJECT_TASK_STACK_DEBUG
+    uint32_t last_stack_log_ms = 0U;
+#endif
     bool display_sleeping = false;
     for (;;) {
         KeyEvent event = {};
@@ -50,6 +54,13 @@ void gui_task(void *parameter) {
         egui_port_poll();
         const uint32_t poll_elapsed_ms = millis() - poll_started_ms;
         const uint32_t poll_finished_ms = millis();
+#if PROJECT_TASK_STACK_DEBUG
+        if (poll_finished_ms - last_stack_log_ms >= 5000U) {
+            last_stack_log_ms = poll_finished_ms;
+            Serial.printf("[STACK] GUI free=%u bytes\n",
+                          static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+        }
+#endif
         if (poll_elapsed_ms >= GUI_POLL_WARN_MS &&
             (last_slow_poll_log_ms == 0U ||
              poll_finished_ms - last_slow_poll_log_ms >= GUI_POLL_LOG_INTERVAL_MS)) {

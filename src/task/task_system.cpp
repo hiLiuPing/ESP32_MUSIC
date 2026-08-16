@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <cstring>
+#include <esp_heap_caps.h>
 
 #include "app/app_data.h"
 #include "app/home_demo.h"
@@ -46,6 +47,11 @@ void require_task(BaseType_t result, const char *name) {
 }
 
 void task_system_init() {
+    Serial.printf("[MEM] before tasks internal_free=%lu internal_largest=%lu\n",
+                  static_cast<unsigned long>(
+                      heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                  static_cast<unsigned long>(
+                      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
     KeyEventQueue = xQueueCreate(16, sizeof(KeyEvent));
     GuiKeyQueue = xQueueCreate(16, sizeof(KeyEvent));
     PlayerCommandQueue = xQueueCreate(12, sizeof(PlayerCommand));
@@ -84,7 +90,9 @@ void task_system_init() {
                  "Player");
     require_task(xTaskCreate(user_AppDataTask, "AppData", 3072, nullptr, 2, nullptr),
                  "AppData");
-    require_task(xTaskCreatePinnedToCore(gui_task, "Gui", 32768, nullptr, 2, nullptr, 0),
+    // Keep enough stack for the EGUI/file-browser call paths without starving
+    // Wi-Fi, which allocates its control buffers from internal RAM.
+    require_task(xTaskCreatePinnedToCore(gui_task, "Gui", 16384, nullptr, 2, nullptr, 0),
                  "Gui");
     require_task(xTaskCreate(file_manager_task, "FileManager", 12288, nullptr, 1,
                              &FileManagerTaskHandle),
@@ -96,6 +104,11 @@ void task_system_init() {
 #else
     Serial.println("[HomeDemo] weather synchronization disabled");
 #endif
+    Serial.printf("[MEM] after tasks internal_free=%lu internal_largest=%lu\n",
+                  static_cast<unsigned long>(
+                      heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                  static_cast<unsigned long>(
+                      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
 }
 
 bool task_post_player_command(PlayerCommandType type, int16_t value,

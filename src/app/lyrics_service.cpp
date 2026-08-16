@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <esp_heap_caps.h>
 
 #include "app/player_types.h"
 
@@ -19,7 +20,7 @@ struct LyricEntry {
 };
 
 LyricEntry entries[LYRICS_MAX_ENTRIES] = {};
-char text_pool[LYRICS_TEXT_POOL_SIZE] = {};
+char *text_pool = nullptr;
 size_t entry_count = 0U;
 size_t text_used = 0U;
 uint16_t next_order = 0U;
@@ -43,7 +44,19 @@ void clear_unlocked() {
     entry_count = 0U;
     text_used = 0U;
     next_order = 0U;
-    text_pool[0] = '\0';
+    if (text_pool != nullptr) text_pool[0] = '\0';
+}
+
+bool ensure_text_pool() {
+    if (text_pool != nullptr) return true;
+    text_pool = static_cast<char *>(
+        heap_caps_calloc(LYRICS_TEXT_POOL_SIZE, sizeof(char),
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (text_pool == nullptr) {
+        Serial.println("[LYRICS] PSRAM text pool allocation failed");
+        return false;
+    }
+    return true;
 }
 
 bool build_lrc_path(const char *audio_path, char *out, size_t out_capacity) {
@@ -213,6 +226,7 @@ void parse_line(char *line, bool first_line, bool *entry_limit_reported,
 
 void lyrics_service_attach_mutex(SemaphoreHandle_t mutex) {
     lyrics_mutex = mutex;
+    (void)ensure_text_pool();
 }
 
 void lyrics_service_clear() {
@@ -221,6 +235,7 @@ void lyrics_service_clear() {
 }
 
 bool lyrics_service_load(fs::FS &filesystem, const char *audio_path) {
+    if (!ensure_text_pool()) return false;
     char lrc_path[PLAYER_PATH_LENGTH] = {};
     if (!build_lrc_path(audio_path, lrc_path, sizeof(lrc_path))) {
         lyrics_service_clear();
@@ -291,6 +306,7 @@ bool lyrics_service_get_current_line(uint32_t elapsed_seconds,
                                      char *out, size_t out_capacity) {
     if (out == nullptr || out_capacity == 0U) return false;
     out[0] = '\0';
+    if (text_pool == nullptr) return false;
     LockGuard lock(pdMS_TO_TICKS(5U));
     if (!lock.locked() || entry_count == 0U) return false;
 

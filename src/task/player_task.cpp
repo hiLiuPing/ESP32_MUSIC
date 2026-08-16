@@ -9,6 +9,7 @@
 #include <dsps_fft2r.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#include <freertos/task.h>
 
 #include "app/music_library.h"
 #include "app/lyrics_service.h"
@@ -104,7 +105,7 @@ uint16_t shuffle_count = 0;
 uint16_t shuffle_cursor = 0;
 uint8_t attempted_tracks[(PLAYER_MAX_TRACKS + 7U) / 8U] = {};
 char current_path[PLAYER_PATH_LENGTH] = {};
-char direct_audio_paths[DIRECT_AUDIO_MAX][PLAYER_PATH_LENGTH] = {};
+char (*direct_audio_paths)[PLAYER_PATH_LENGTH] = nullptr;
 uint16_t direct_audio_count = 0U;
 uint16_t direct_audio_index = 0U;
 bool direct_audio_mode = false;
@@ -125,12 +126,21 @@ void clear_weather_recovery() {
     weather_recovery_file_pos = 0U;
 }
 
-void log_psram_usage(const char *phase) {
-    constexpr uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
-    Serial.printf("[PSRAM] %s free=%u largest=%u\n",
+void log_player_memory(const char *phase) {
+#if PROJECT_TASK_STACK_DEBUG
+    constexpr uint32_t internal_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    constexpr uint32_t psram_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    const UBaseType_t stack_high_water = uxTaskGetStackHighWaterMark(nullptr);
+    Serial.printf("[PLAYER_MEM] %s stack_hwm=%u internal_free=%u internal_largest=%u psram_free=%u psram_largest=%u\n",
                   phase == nullptr ? "unknown" : phase,
-                  static_cast<unsigned>(heap_caps_get_free_size(caps)),
-                  static_cast<unsigned>(heap_caps_get_largest_free_block(caps)));
+                  static_cast<unsigned>(stack_high_water),
+                  static_cast<unsigned>(heap_caps_get_free_size(internal_caps)),
+                  static_cast<unsigned>(heap_caps_get_largest_free_block(internal_caps)),
+                  static_cast<unsigned>(heap_caps_get_free_size(psram_caps)),
+                  static_cast<unsigned>(heap_caps_get_largest_free_block(psram_caps)));
+#else
+    (void)phase;
+#endif
 }
 
 void set_output_volume(uint8_t volume) {
@@ -411,7 +421,10 @@ void clear_direct_audio() {
     direct_audio_count = 0U;
     direct_audio_index = 0U;
     direct_audio_mode = false;
-    std::memset(direct_audio_paths, 0, sizeof(direct_audio_paths));
+    if (direct_audio_paths != nullptr) {
+        std::memset(direct_audio_paths, 0,
+                    DIRECT_AUDIO_MAX * PLAYER_PATH_LENGTH);
+    }
 }
 
 void scan_direct_audio(const char *directory_path) {
@@ -449,7 +462,9 @@ bool start_direct_track(uint16_t index) {
     const bool valid = file && !file.isDirectory();
     file.close();
     if (!valid || !supported_audio_path(path)) return false;
-    if (ends_with_ignore_case(path, ".flac") && !audio_input_uses_psram) return false;
+    const bool is_flac = ends_with_ignore_case(path, ".flac");
+    if (is_flac && !audio_input_uses_psram) return false;
+    if (is_flac) log_player_memory("before FLAC open");
     direct_audio_index = index;
     std::snprintf(current_path, sizeof(current_path), "%s", path);
     std::snprintf(status.file_name, sizeof(status.file_name), "%s", path_name(path));
@@ -462,6 +477,7 @@ bool start_direct_track(uint16_t index) {
         publish(true);
         return false;
     }
+    if (is_flac) log_player_memory("after FLAC open");
     track_started = true;
     eof_received = false;
     clear_spectrum();
@@ -710,13 +726,15 @@ bool start_track_once(uint16_t index) {
     status.playlist_track_index = index;
     std::snprintf(status.file_name, sizeof(status.file_name), "%s", name);
     std::snprintf(current_path, sizeof(current_path), "%s", path);
-    if (ends_with_ignore_case(path, ".flac") && !audio_input_uses_psram) {
+    const bool is_flac = ends_with_ignore_case(path, ".flac");
+    if (is_flac && !audio_input_uses_psram) {
         track_started = false;
         status.state = PlayerState::Error;
         status.error = PlayerError::OpenFailed;
         Serial.printf("[PLAYER] skipped FLAC without PSRAM input buffer: %s\n", path);
         return false;
     }
+    if (is_flac) log_player_memory("before FLAC open");
 
     (void)lyrics_service_load(bsp_storage_fs(), path);
     set_output_volume(PLAYER_VOLUME_MIN);
@@ -727,6 +745,7 @@ bool start_track_once(uint16_t index) {
         Serial.printf("[PLAYER] failed to open %s\n", path);
         return false;
     }
+    if (is_flac) log_player_memory("after FLAC open");
 
     track_started = true;
     status.elapsed_seconds = 0;
@@ -847,7 +866,7 @@ void rescan_library(bool keep_stopped = false) {
     }
 
     music_library_scan(bsp_storage_fs());
-    log_psram_usage("after library scan");
+    log_player_memory("after library scan");
     status.library_version = music_library_version();
     status.track_count = static_cast<uint16_t>(music_library_count());
     status.playlist_index = 0U;
@@ -1185,6 +1204,7 @@ void handle_command(const PlayerCommand &command) {
 }
 
 void stop_audio_pipeline() {
+    const bool was_flac = ends_with_ignore_case(current_path, ".flac");
     set_output_volume(PLAYER_VOLUME_MIN);
     volume_fade.mode = FadeMode::None;
     if (audio.isRunning() || track_started) {
@@ -1195,6 +1215,7 @@ void stop_audio_pipeline() {
     clear_weather_recovery();
     lyrics_service_clear();
     clear_spectrum();
+    if (was_flac) log_player_memory("after FLAC stop");
 }
 
 void finish_track_and_advance(bool duration_fallback) {
@@ -1282,20 +1303,30 @@ void audio_eof_mp3(const char *info) {
 }
 
 void audio_info(const char *info) {
-    Serial.printf("[AUDIO] %s\n", info);
+    Serial.printf("[AUDIO] %s\n", info == nullptr ? "" : info);
+    if (info != nullptr && std::strstr(info, "FLAC decode error") != nullptr) {
+        Serial.printf("[PLAYER] FLAC decode error path=%s\n", current_path);
+        log_player_memory("FLAC decode error");
+    }
 }
 
 void player_task(void *parameter) {
     (void)parameter;
+    direct_audio_paths = static_cast<char (*)[PLAYER_PATH_LENGTH]>(
+        heap_caps_calloc(DIRECT_AUDIO_MAX, PLAYER_PATH_LENGTH,
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (direct_audio_paths == nullptr) {
+        Serial.println("[PLAYER] direct audio path buffer allocation failed");
+    }
     audio.setBufsize(-1, AUDIO_PSRAM_BUFFER_BYTES);
-    log_psram_usage("before audio input buffer");
+    log_player_memory("before audio input buffer");
     const bool audio_input_ready = audio.initInputBuffer();
     audio_input_uses_psram = audio.inputBufferUsesPSRAM();
     Serial.printf("[PLAYER] audio input buffer request=%d bytes ready=%s memory=%s\n",
                   AUDIO_PSRAM_BUFFER_BYTES,
                   audio_input_ready ? "yes" : "no",
                   audio_input_uses_psram ? "PSRAM" : "internal");
-    log_psram_usage("after audio input buffer");
+    log_player_memory("after audio input buffer");
 
     audio_settings_init();
     const AudioSettings saved_audio_settings = audio_settings_get();
@@ -1379,6 +1410,10 @@ void player_task(void *parameter) {
                 status.error = PlayerError::DecodeStopped;
                 Serial.printf("[PLAYER] decode stopped for track %u, trying next\n",
                               static_cast<unsigned>(status.track_index));
+                if (ends_with_ignore_case(current_path, ".flac")) {
+                    Serial.printf("[PLAYER] FLAC decode stopped path=%s\n", current_path);
+                    log_player_memory("FLAC decode stopped");
+                }
                 move_track(1, true, true, true);
             }
             if (audio.isRunning()) clear_weather_recovery();

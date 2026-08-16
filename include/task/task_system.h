@@ -10,6 +10,10 @@
 #include "app/system_notify.h"
 #include "task/weather_sync_task.h"
 
+#ifndef PROJECT_TASK_STACK_DEBUG
+#define PROJECT_TASK_STACK_DEBUG 0
+#endif
+
 constexpr EventBits_t HW_EVENT_DISPLAY_READY = BIT0;
 constexpr EventBits_t HW_EVENT_SD_READY = BIT1;
 constexpr EventBits_t HW_EVENT_CODEC_READY = BIT2;

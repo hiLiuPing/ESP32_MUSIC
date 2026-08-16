@@ -2,8 +2,6 @@
 
 #include <cstdio>
 
-#include "anim/egui_animation_value.h"
-#include "anim/egui_interpolator_anticipate_overshoot.h"
 #include "app/settings_app.h"
 #include "app/system_notify.h"
 #include "gui/egui_port.h"
@@ -24,12 +22,9 @@ bool manual_sync_requested = false;
 bool last_manual_sync_ready = true;
 uint32_t last_manual_sync_ms = 0U;
 int16_t selection_box_y = 25;
-egui_animation_value_t selection_animation = {};
-egui_interpolator_anticipate_overshoot_t selection_interpolator = {};
 constexpr uint8_t ITEM_COUNT = 7U;
 constexpr uint8_t VISIBLE_ITEMS = 6U;
 constexpr int16_t ROW_HEIGHT = 22;
-constexpr uint16_t SELECTION_ANIMATION_MS = 240U;
 constexpr uint32_t MANUAL_SYNC_COOLDOWN_MS = 30000U;
 
 const char *labels[ITEM_COUNT] = {"诗词弹窗", "展示时长", "天气同步", "立即同步",
@@ -58,11 +53,6 @@ uint16_t adjust_interval(uint16_t value, int delta) {
     return static_cast<uint16_t>(next);
 }
 
-void selection_animation_on_value(egui_animation_t *, int32_t value) {
-    selection_box_y = static_cast<int16_t>(value);
-    egui_view_invalidate_full(EGUI_VIEW_OF(&view));
-}
-
 uint8_t visible_first() {
     return selected >= VISIBLE_ITEMS ? static_cast<uint8_t>(selected - VISIBLE_ITEMS + 1U) : 0U;
 }
@@ -73,22 +63,34 @@ int16_t selection_y_for(uint8_t item) {
     return static_cast<int16_t>(25 + row * ROW_HEIGHT);
 }
 
-void animate_selection_to(uint8_t item) {
-    const int16_t target_y = selection_y_for(item);
-    if (selection_box_y == target_y) return;
+egui_region_t setting_row_region(uint8_t item, uint8_t first) {
+    const uint8_t row = item >= first ? static_cast<uint8_t>(item - first) : 0U;
+    return {{0, static_cast<int16_t>(25 + row * ROW_HEIGHT)},
+            {EGUI_CONFIG_SCREEN_WIDTH, ROW_HEIGHT}};
+}
 
-    egui_animation_stop(EGUI_ANIM_OF(&selection_animation));
-    egui_animation_value_init(EGUI_ANIM_OF(&selection_animation));
-    egui_animation_value_set_range(&selection_animation, selection_box_y, target_y);
-    egui_animation_value_set_on_value(&selection_animation, selection_animation_on_value);
-    egui_animation_target_view_set(EGUI_ANIM_OF(&selection_animation), EGUI_VIEW_OF(&view));
-    egui_animation_duration_set(EGUI_ANIM_OF(&selection_animation), SELECTION_ANIMATION_MS);
-    egui_interpolator_anticipate_overshoot_init(EGUI_INTERP_OF(&selection_interpolator));
-    egui_interpolator_anticipate_overshoot_tension_set(
-        EGUI_INTERP_OF(&selection_interpolator), EGUI_FLOAT_VALUE(0.7f));
-    egui_animation_interpolator_set(EGUI_ANIM_OF(&selection_animation),
-                                    EGUI_INTERP_OF(&selection_interpolator));
-    egui_animation_start(EGUI_ANIM_OF(&selection_animation));
+void invalidate_selection_change(uint8_t old_selected, uint8_t old_first) {
+    const uint8_t new_first = visible_first();
+    if (old_first != new_first) {
+        // The visible rows shift when crossing the six-item window boundary.
+        const egui_region_t content_region = {
+            {0, 21}, {EGUI_CONFIG_SCREEN_WIDTH, EGUI_CONFIG_SCREEN_HEIGHT - 21}};
+        egui_view_invalidate_region(EGUI_VIEW_OF(&view), &content_region);
+        return;
+    }
+
+    const egui_region_t old_region = setting_row_region(old_selected, old_first);
+    const egui_region_t new_region = setting_row_region(selected, new_first);
+    egui_view_invalidate_region(EGUI_VIEW_OF(&view), &old_region);
+    egui_view_invalidate_region(EGUI_VIEW_OF(&view), &new_region);
+
+    // The bottom hint changes for the action rows.
+    if ((old_selected >= 3U && old_selected <= 5U) ||
+        (selected >= 3U && selected <= 5U)) {
+        const egui_region_t hint_region = {
+            {0, 145}, {EGUI_CONFIG_SCREEN_WIDTH, EGUI_CONFIG_SCREEN_HEIGHT - 145}};
+        egui_view_invalidate_region(EGUI_VIEW_OF(&view), &hint_region);
+    }
 }
 
 bool manual_sync_ready(uint32_t now) {
@@ -196,7 +198,6 @@ void init() {
     last_manual_sync_ready = manual_sync_ready(millis());
 }
 void enter() {
-    egui_animation_stop(EGUI_ANIM_OF(&selection_animation));
     settings = settings_app_get();
     selected = 0U;
     selection_box_y = 25;
@@ -253,13 +254,19 @@ bool key_consume(const KeyEvent &event) {
         return true;
     }
     if (event.id == KeyId::Left && event.gesture == KeyGesture::Click) {
+        const uint8_t old_selected = selected;
+        const uint8_t old_first = visible_first();
         selected = static_cast<uint8_t>((selected + ITEM_COUNT - 1U) % ITEM_COUNT);
-        animate_selection_to(selected);
+        selection_box_y = selection_y_for(selected);
+        invalidate_selection_change(old_selected, old_first);
         return true;
     }
     if (event.id == KeyId::Right && event.gesture == KeyGesture::Click) {
+        const uint8_t old_selected = selected;
+        const uint8_t old_first = visible_first();
         selected = static_cast<uint8_t>((selected + 1U) % ITEM_COUNT);
-        animate_selection_to(selected);
+        selection_box_y = selection_y_for(selected);
+        invalidate_selection_change(old_selected, old_first);
         return true;
     }
     return false;

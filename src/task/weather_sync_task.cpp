@@ -1,6 +1,7 @@
 #include "task/weather_sync_task.h"
 
 #include <algorithm>
+#include <freertos/task.h>
 
 #include "app/app_data.h"
 #include "app/sensor_service.h"
@@ -239,6 +240,9 @@ void weather_sync_task(void *parameter) {
     }
 
     AppSettings settings = settings_app_get();
+#if PROJECT_TASK_STACK_DEBUG
+    uint32_t last_stack_log_ms = millis();
+#endif
     uint32_t pending = settings.weather_interval_min != 0U ? WEATHER_SYNC_NOW : 0U;
     bool force_sync = false;
     for (;;) {
@@ -279,6 +283,14 @@ void weather_sync_task(void *parameter) {
             }
         }
         settings = settings_app_get();
+#if PROJECT_TASK_STACK_DEBUG
+        const uint32_t stack_log_now = millis();
+        if (stack_log_now - last_stack_log_ms >= 5000U) {
+            last_stack_log_ms = stack_log_now;
+            Serial.printf("[STACK] Weather free=%u bytes\n",
+                          static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+        }
+#endif
         const bool due = (pending & WEATHER_SYNC_NOW) != 0U;
         if (due && !weather_network_ap_active() && (settings.weather_interval_min != 0U || force_sync)) {
             if (!weather_network_has_profiles()) {

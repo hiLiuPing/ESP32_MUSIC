@@ -4113,6 +4113,8 @@ void Audio::printDecodeError(int r) {
             case ERR_FLAC_WRONG_RICE_PARTITION_NR:          e = "WRONG RICE PARTITION NR";          break;
             case ERR_FLAC_BITS_PER_SAMPLE_TOO_BIG:          e = "BITS PER SAMPLE > 16";             break;
             case ERR_FLAG_BITS_PER_SAMPLE_UNKNOWN:          e = "BITS PER SAMPLE UNKNOWN";          break;
+            case ERR_FLAC_INPUT_UNDERRUN:                   e = "INPUT UNDERRUN";                  break;
+            case ERR_FLAC_INVALID_SUBFRAME:                 e = "INVALID SUBFRAME";                break;
             default: e = "ERR_UNKNOWN";
         }
         AUDIO_INFO("FLAC decode error %d : %s", r, e);

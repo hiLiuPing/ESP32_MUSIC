@@ -20,6 +20,17 @@ uint8_t selection_cursor[4] = {};
 uint32_t next_attempt_ms = 0U;
 bool initialized = false;
 
+void log_poetry_memory(const char *phase) {
+    constexpr uint32_t internal_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    constexpr uint32_t psram_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    Serial.printf("[POETRY_CACHE] %s internal_free=%u internal_largest=%u psram_free=%u psram_largest=%u\n",
+                  phase == nullptr ? "unknown" : phase,
+                  static_cast<unsigned>(heap_caps_get_free_size(internal_caps)),
+                  static_cast<unsigned>(heap_caps_get_largest_free_block(internal_caps)),
+                  static_cast<unsigned>(heap_caps_get_free_size(psram_caps)),
+                  static_cast<unsigned>(heap_caps_get_largest_free_block(psram_caps)));
+}
+
 enum class PrepareFailure : uint8_t {
     None,
     Invalid,
@@ -217,6 +228,7 @@ bool ui_poetry_cache_init() {
     if (initialized) return slots != nullptr;
     initialized = true;
     poetry_app_init();
+    log_poetry_memory("before allocation");
     if (!psramFound() ||
         !ui_heiti_font_poetry_cache_init(SHARED_GLYPH_POOL_BYTES)) {
         Serial.println("[POETRY_CACHE] PSRAM glyph cache unavailable");
@@ -233,6 +245,7 @@ bool ui_poetry_cache_init() {
                   static_cast<unsigned>(sizeof(UiPoetryCacheSlot) *
                                         UI_POETRY_CACHE_SLOT_COUNT),
                   static_cast<unsigned>(ESP.getFreePsram()));
+    log_poetry_memory("after allocation");
     return true;
 }
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <esp_heap_caps.h>
 
 #include "app/file_browser.h"
 #include "app/system_notify.h"
@@ -26,7 +27,7 @@ struct TreeNode {
 };
 
 GuiEguiView view;
-TreeNode nodes[MAX_TREE_NODES] = {};
+TreeNode *nodes = nullptr;
 uint8_t node_count = 0U;
 uint8_t selected = 0U;
 uint8_t visible_start = 0U;
@@ -270,7 +271,18 @@ void draw(egui_canvas_t *canvas) {
     }
 }
 
-void init() { gui_egui_view_init(&view, egui_port_core(), draw); }
+void init() {
+    if (nodes == nullptr) {
+        nodes = static_cast<TreeNode *>(
+            heap_caps_calloc(MAX_TREE_NODES, sizeof(TreeNode),
+                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (nodes == nullptr) {
+            (void)system_notify_post(SystemNotifyType::Error,
+                                     "FILE BROWSER MEMORY FAILED");
+        }
+    }
+    gui_egui_view_init(&view, egui_port_core(), draw);
+}
 void enter() { mode = BrowserMode::StorageSelect; selected_storage = 0U; clear_tree(); }
 void exit() { mode = BrowserMode::StorageSelect; }
 void navigation_changed(bool) {}

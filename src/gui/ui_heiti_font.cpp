@@ -907,7 +907,7 @@ bool ui_heiti_font_poetry_cache_init(size_t max_bytes) {
     if (cache == nullptr) return false;
     uint16_t *index = static_cast<uint16_t *>(
         heap_caps_calloc(index_capacity, sizeof(uint16_t),
-                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (index == nullptr) {
         heap_caps_free(cache);
         return false;
