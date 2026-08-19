@@ -929,8 +929,12 @@ void file_manager_network_init() {}
 bool file_manager_network_start_ap() {
     if (ap_active) return true;
     WiFi.mode(WIFI_AP);
+    WiFi.setSleep(false);
     WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_NETMASK);
-    if (!WiFi.softAP(AP_SSID)) return false;
+    if (!WiFi.softAP(AP_SSID)) {
+        WiFi.mode(WIFI_OFF);
+        return false;
+    }
     register_routes();
     server.begin();
     dns_server.start(DNS_PORT, "*", AP_IP);

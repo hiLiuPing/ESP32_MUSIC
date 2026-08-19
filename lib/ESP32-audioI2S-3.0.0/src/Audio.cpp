@@ -4278,6 +4278,11 @@ bool Audio::setSampleRate(uint32_t sampRate) {
 uint32_t Audio::getSampleRate(){
     return m_sampleRate;
 }
+uint32_t Audio::getI2sOutputBufferDurationMs(){
+    if(!m_sampleRate || m_i2s_config.dma_buf_count <= 0 || m_i2s_config.dma_buf_len <= 0) return 0;
+    const uint64_t frames = (uint64_t)m_i2s_config.dma_buf_count * (uint64_t)m_i2s_config.dma_buf_len;
+    return (uint32_t)((frames * 1000ULL + m_sampleRate - 1ULL) / m_sampleRate);
+}
 //---------------------------------------------------------------------------------------------------------------------
 bool Audio::setBitsPerSample(int bits) {
     if((bits != 16) && (bits != 8)) return false;

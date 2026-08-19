@@ -41,3 +41,5 @@ bool task_post_player_audio_settings(const AudioSettings &settings, bool persist
                                      bool restart_sleep_timer = false);
 bool task_post_player_path(const char *path, bool show_feedback = true);
 void task_publish_player_status(const PlayerStatus &status);
+void task_set_player_visualization_active(bool active);
+bool task_player_visualization_active();

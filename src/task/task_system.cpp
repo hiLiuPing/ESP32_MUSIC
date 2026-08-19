@@ -1,6 +1,7 @@
 #include "task/task_system.h"
 
 #include <Arduino.h>
+#include <atomic>
 #include <cstring>
 #include <esp_heap_caps.h>
 
@@ -31,6 +32,8 @@ void player_task(void *parameter);
 void gui_task(void *parameter);
 
 namespace {
+std::atomic<bool> player_visualization_active{false};
+
 void require_handle(const void *handle, const char *name) {
     if (handle == nullptr) {
         Serial.printf("[FATAL] failed to create %s\n", name);
@@ -63,6 +66,7 @@ void task_system_init() {
     AppDataMutex = xSemaphoreCreateMutex();
     HardwareEventGroup = xEventGroupCreate();
     system_notify_init();
+    system_notify_attach_wake_semaphore(GuiWakeSemaphore);
 
     require_handle(KeyEventQueue, "KeyEventQueue");
     require_handle(GuiKeyQueue, "GuiKeyQueue");
@@ -182,4 +186,12 @@ void task_publish_player_status(const PlayerStatus &status) {
     if (GuiWakeSemaphore != nullptr) {
         xSemaphoreGive(GuiWakeSemaphore);
     }
+}
+
+void task_set_player_visualization_active(bool active) {
+    player_visualization_active.store(active, std::memory_order_release);
+}
+
+bool task_player_visualization_active() {
+    return player_visualization_active.load(std::memory_order_acquire);
 }

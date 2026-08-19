@@ -25,6 +25,17 @@ bool bsp_display_init() {
     return true;
 }
 
+void bsp_display_set_sleeping(bool sleeping) {
+    if (sleeping) {
+        display.display_on(false);
+        display.display_sleep(true);
+        return;
+    }
+    display.display_sleep(false);
+    display.High_Power_Mode();
+    display.display_on(true);
+}
+
 ST7305_2p9_BW_DisplayDriver &bsp_display() {
     return display;
 }

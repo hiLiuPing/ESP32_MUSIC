@@ -13,6 +13,13 @@
 namespace {
 constexpr uint32_t GUI_POLL_WARN_MS = 250U;
 constexpr uint32_t GUI_POLL_LOG_INTERVAL_MS = 1000U;
+
+void update_player_visualization(bool display_sleeping) {
+    const bool active = !display_sleeping &&
+                        gui_page_current() == UiPage::Music &&
+                        ui_music_page_visualization_visible();
+    task_set_player_visualization_active(active);
+}
 }
 
 void gui_task(void *parameter) {
@@ -30,12 +37,13 @@ void gui_task(void *parameter) {
     uint32_t last_stack_log_ms = 0U;
 #endif
     bool display_sleeping = false;
+    update_player_visualization(false);
     for (;;) {
         KeyEvent event = {};
         while (xQueueReceive(GuiKeyQueue, &event, 0) == pdTRUE) {
             last_input_ms = millis();
             if (display_sleeping) {
-                bsp_display().display_on(true);
+                bsp_display_set_sleeping(false);
                 display_sleeping = false;
                 egui_core_force_refresh(egui_port_core());
             }
@@ -47,13 +55,20 @@ void gui_task(void *parameter) {
             gui_page_update_status(status);
         }
 
-        ui_music_page_cache_service();
-        gui_page_service();
-        gui_page_render();
-        const uint32_t poll_started_ms = millis();
-        egui_port_poll();
-        const uint32_t poll_elapsed_ms = millis() - poll_started_ms;
-        const uint32_t poll_finished_ms = millis();
+        uint32_t poll_elapsed_ms = 0U;
+        uint32_t poll_finished_ms = millis();
+        if (!display_sleeping) {
+            ui_music_page_cache_service();
+            gui_page_service();
+            gui_page_render();
+            const uint32_t poll_started_ms = millis();
+            egui_port_poll();
+            poll_elapsed_ms = millis() - poll_started_ms;
+            poll_finished_ms = millis();
+        } else {
+            // Consume notifications promptly without rendering to a sleeping panel.
+            gui_page_service();
+        }
 #if PROJECT_TASK_STACK_DEBUG
         if (poll_finished_ms - last_stack_log_ms >= 5000U) {
             last_stack_log_ms = poll_finished_ms;
@@ -71,9 +86,11 @@ void gui_task(void *parameter) {
         const AppSettings settings = settings_app_get();
         if (!display_sleeping && settings.screen_idle_min != 0U &&
             millis() - last_input_ms >= static_cast<uint32_t>(settings.screen_idle_min) * 60000UL) {
-            bsp_display().display_on(false);
+            bsp_display_set_sleeping(true);
             display_sleeping = true;
         }
-        xSemaphoreTake(GuiWakeSemaphore, pdMS_TO_TICKS(30));
+        update_player_visualization(display_sleeping);
+        xSemaphoreTake(GuiWakeSemaphore,
+                       display_sleeping ? portMAX_DELAY : pdMS_TO_TICKS(30));
     }
 }

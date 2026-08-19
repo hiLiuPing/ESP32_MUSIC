@@ -195,6 +195,7 @@ public:
     uint32_t getFileSize();
     uint32_t getFilePos();
     uint32_t getSampleRate();
+    uint32_t getI2sOutputBufferDurationMs();
     uint8_t  getBitsPerSample();
     uint8_t  getChannels();
     uint32_t getBitRate(bool avg = false);

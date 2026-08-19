@@ -19,6 +19,8 @@ constexpr uint8_t CODEC_INIT_ATTEMPTS = 3U;
 constexpr uint8_t SPEAKER_VOLUME = 55U;
 constexpr uint8_t HEADPHONE_ACTIVE_VOLUME = 63U;
 constexpr uint8_t HEADPHONE_MUTED_VOLUME = 0U;
+bool output_muted = false;
+bool output_mute_initialized = false;
 
 uint8_t eq_gain_from_db(int8_t db) {
     return static_cast<uint8_t>(constrain(static_cast<int>(db) + 12, 0, 24));
@@ -26,6 +28,7 @@ uint8_t eq_gain_from_db(int8_t db) {
 
 void power_cycle_codec() {
     digitalWrite(BoardConfig::AmplifierEnable, LOW);
+    output_mute_initialized = false;
     digitalWrite(BoardConfig::AudioPower, LOW);
     delay(AUDIO_POWER_OFF_MS);
     digitalWrite(BoardConfig::AudioPower, HIGH);
@@ -46,11 +49,16 @@ void apply_codec_settings_unlocked(int8_t bass_db, int8_t treble_db,
     codec.set3D(static_cast<uint8_t>(constrain(static_cast<int>(surround_depth), 0, 15)));
 }
 
-void apply_output_route_unlocked(bool amplifier_enabled) {
-    const uint8_t headphone_volume = amplifier_enabled
-                                         ? HEADPHONE_MUTED_VOLUME
-                                         : HEADPHONE_ACTIVE_VOLUME;
+void apply_output_route_unlocked(BspAudioPlaybackRoute route) {
+    const bool speaker_enabled = route == BspAudioPlaybackRoute::Speaker;
+    const bool headphones_enabled = route == BspAudioPlaybackRoute::Headphones;
+    codec.setSPKvol(speaker_enabled ? SPEAKER_VOLUME : 0U);
+    const uint8_t headphone_volume = headphones_enabled
+                                         ? HEADPHONE_ACTIVE_VOLUME
+                                         : HEADPHONE_MUTED_VOLUME;
     codec.setHPvol(headphone_volume, headphone_volume);
+    codec.setPlaybackPower(route != BspAudioPlaybackRoute::Off,
+                           speaker_enabled);
 }
 }
 
@@ -61,15 +69,34 @@ void bsp_audio_apply_codec_settings(int8_t bass_db, int8_t treble_db,
     bsp_i2c_unlock();
 }
 
-void bsp_audio_set_amplifier_enabled(bool enabled) {
-    pinMode(BoardConfig::AmplifierEnable, OUTPUT);
-    digitalWrite(BoardConfig::AmplifierEnable, enabled ? HIGH : LOW);
+bool bsp_audio_set_output_muted(bool muted) {
+    if (output_mute_initialized && output_muted == muted) return true;
+    if (!bsp_i2c_lock(pdMS_TO_TICKS(100U))) return false;
+    codec.setDACMute(muted);
+    output_muted = muted;
+    output_mute_initialized = true;
+    bsp_i2c_unlock();
+    return true;
 }
 
-void bsp_audio_apply_output_route(bool amplifier_enabled) {
-    if (!bsp_i2c_lock(pdMS_TO_TICKS(100U))) return;
-    apply_output_route_unlocked(amplifier_enabled);
+bool bsp_audio_set_playback_route(BspAudioPlaybackRoute route) {
+    pinMode(BoardConfig::AmplifierEnable, OUTPUT);
+    digitalWrite(BoardConfig::AmplifierEnable, LOW);
+
+    if (!bsp_i2c_lock(pdMS_TO_TICKS(100U))) return false;
+    codec.setDACMute(true);
+    output_muted = true;
+    output_mute_initialized = true;
+    apply_output_route_unlocked(route);
     bsp_i2c_unlock();
+
+    if (route == BspAudioPlaybackRoute::Off) return true;
+    delay(AMPLIFIER_SETTLE_MS);
+    if (!bsp_audio_set_output_muted(false)) return false;
+    if (route == BspAudioPlaybackRoute::Speaker) {
+        digitalWrite(BoardConfig::AmplifierEnable, HIGH);
+    }
+    return true;
 }
 
 void bsp_audio_power_on_early() {
@@ -109,9 +136,11 @@ bool bsp_audio_codec_init() {
             if (last_probe_result == 0U && bsp_i2c_lock(pdMS_TO_TICKS(500U))) {
                 const bool initialized = codec.begin();
                 if (initialized) {
-                    codec.setSPKvol(SPEAKER_VOLUME);
-                    apply_output_route_unlocked(true);
+                    codec.setDACMute(true);
+                    apply_output_route_unlocked(BspAudioPlaybackRoute::Off);
                     apply_codec_settings_unlocked(0, 0, 0);
+                    output_muted = true;
+                    output_mute_initialized = true;
                 }
                 bsp_i2c_unlock();
                 if (initialized) return true;
@@ -129,8 +158,9 @@ bool bsp_audio_codec_init() {
     return false;
 }
 
-bool bsp_audio_configure_i2s(Audio &audio, bool amplifier_enabled) {
-    bsp_audio_set_amplifier_enabled(false);
+bool bsp_audio_configure_i2s(Audio &audio) {
+    pinMode(BoardConfig::AmplifierEnable, OUTPUT);
+    digitalWrite(BoardConfig::AmplifierEnable, LOW);
     const bool configured = audio.setPinout(BoardConfig::I2sBitClock,
                                             BoardConfig::I2sWordSelect,
                                             BoardConfig::I2sDataOut,
@@ -141,10 +171,7 @@ bool bsp_audio_configure_i2s(Audio &audio, bool amplifier_enabled) {
         return false;
     }
 
-    delay(AMPLIFIER_SETTLE_MS);
-    bsp_audio_set_amplifier_enabled(amplifier_enabled);
-    Serial.printf("[AUDIO] I2S ready, amplifier GPIO%u=%s\n",
-                  BoardConfig::AmplifierEnable,
-                  amplifier_enabled ? "HIGH" : "LOW");
+    Serial.printf("[AUDIO] I2S ready, amplifier GPIO%u=LOW\n",
+                  BoardConfig::AmplifierEnable);
     return true;
 }

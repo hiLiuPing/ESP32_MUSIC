@@ -195,7 +195,7 @@ void ensure_initialized() {
     prefs.begin(PREF_NAMESPACE, false);
     load_cache();
     WiFi.persistent(false);
-    WiFi.setSleep(false);
+    WiFi.mode(WIFI_OFF);
     initialized = true;
 }
 }
@@ -226,7 +226,7 @@ bool weather_network_connect(uint32_t timeout_ms) {
     for (uint8_t i = 0U; i < count; ++i) {
         const int slot = order[i];
         WiFi.mode(WIFI_STA);
-        WiFi.setSleep(false);
+        WiFi.setSleep(true);
         if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == profiles[slot].ssid) {
             active_slot = static_cast<int8_t>(slot);
             profiles[slot].order = ++order_sequence;
@@ -255,8 +255,8 @@ bool weather_network_connect(uint32_t timeout_ms) {
 }
 
 void weather_network_disconnect() {
-    if (WiFi.status() == WL_CONNECTED) WiFi.disconnect(false, false);
-    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(true, false);
+    WiFi.mode(WIFI_OFF);
 }
 
 void weather_network_update_active_location(const String &new_location, const String &new_lat,
@@ -300,7 +300,10 @@ bool weather_network_start_ap() {
     WiFi.mode(WIFI_AP_STA);
     WiFi.setSleep(false);
     WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_NETMASK);
-    if (!WiFi.softAP(AP_SSID)) return false;
+    if (!WiFi.softAP(AP_SSID)) {
+        WiFi.mode(WIFI_OFF);
+        return false;
+    }
     const int found = WiFi.scanNetworks(false, true);
     scan_options = "<option value=''>Select network</option>";
     for (int i = 0; i < found; ++i) {
@@ -329,8 +332,8 @@ void weather_network_stop_ap() {
     server.stop();
     dns_server.stop();
     WiFi.softAPdisconnect(true);
-    WiFi.mode(weather_network_has_profiles() ? WIFI_STA : WIFI_OFF);
-    if (WiFi.getMode() != WIFI_OFF) WiFi.setSleep(false);
+    WiFi.disconnect(true, false);
+    WiFi.mode(WIFI_OFF);
     ap_active = false;
 }
 

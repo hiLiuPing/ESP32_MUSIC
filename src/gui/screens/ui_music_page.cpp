@@ -1190,3 +1190,7 @@ GuiPageDescriptor &ui_music_page_descriptor() {
 void ui_music_page_cache_service() {
     cache_playlist_glyphs();
 }
+
+bool ui_music_page_visualization_visible() {
+    return subview == MusicSubview::Main;
+}

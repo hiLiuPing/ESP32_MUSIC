@@ -41,11 +41,13 @@ class WM8978
     void cfgInput(uint8_t micen, uint8_t lineinen, uint8_t auxen);
     void cfgOutput(uint8_t dacen, uint8_t bpsen);
     void cfgI2S(uint8_t fmt, uint8_t len);
+    void setPlaybackPower(bool enabled, bool speakerEnabled);
     void setMICgain(uint8_t gain);
     void setLINEINgain(uint8_t gain);
     void setAUXgain(uint8_t gain);
     void setHPvol(uint8_t voll, uint8_t volr);
     void setSPKvol(uint8_t volx);
+    void setDACMute(bool muted);
     void set3D(uint8_t depth);
     void set3Ddir(uint8_t dir);
     void setEQ1(uint8_t cfreq, uint8_t gain);

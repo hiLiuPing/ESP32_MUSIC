@@ -120,6 +120,37 @@ void WM8978::cfgOutput(uint8_t dacen, uint8_t bpsen)
   Write_Reg(50, regval); //R50设置
   Write_Reg(51, regval); //R51设置
 }
+
+void WM8978::setPlaybackPower(bool enabled, bool speakerEnabled)
+{
+  // Playback does not use the microphone, ADC, input PGAs or input boosts.
+  uint16_t power1 = Read_Reg(1);
+  power1 &= ~(1 << 4);       // MICBEN off
+  power1 |= 1 << 3;          // keep analogue bias on for pop-free resume
+  power1 &= ~0X3;
+  power1 |= 0X1;             // VMID 75K instead of the high-current 5K mode
+  Write_Reg(1, power1);
+
+  uint16_t power2 = Read_Reg(2);
+  power2 &= ~((1 << 8) | (1 << 7) | (1 << 5) | (1 << 4) |
+              (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0));
+  if (enabled && !speakerEnabled) {
+    power2 |= (1 << 8) | (1 << 7); // ROUT1EN, LOUT1EN
+  }
+  Write_Reg(2, power2);
+
+  uint16_t power3 = Read_Reg(3);
+  power3 &= ~((1 << 8) | (1 << 7) | (1 << 6) | (1 << 5) |
+              (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0));
+  if (enabled) {
+    power3 |= (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
+    if (speakerEnabled) {
+      power3 |= (1 << 6) | (1 << 5); // LOUT2EN, ROUT2EN
+    }
+  }
+  Write_Reg(3, power3);
+  cfgOutput(enabled ? 1U : 0U, 0U);
+}
 //WM8978 MIC增益设置(不包括BOOST的20dB,MIC-->ADC输入部分的增益)
 //gain:0~63,对应-12dB~35.25dB,0.75dB/Step
 void WM8978::setMICgain(uint8_t gain)
@@ -184,6 +215,14 @@ void WM8978::setSPKvol(uint8_t volx)
   if (volx == 0)volx |= 1 << 6; //音量为0时,直接mute
   Write_Reg(54, volx);      //R54,喇叭左声道音量设置
   Write_Reg(55, volx | (1 << 8)); //R55,喇叭右声道音量设置,同步更新(SPKVU=1)
+}
+
+void WM8978::setDACMute(bool muted)
+{
+  uint16_t regval = WM8978::Read_Reg(10);
+  if (muted) regval |= 1 << 6;
+  else regval &= ~(1 << 6);
+  Write_Reg(10, regval);
 }
 
   //设置3D环绕声
@@ -348,4 +387,3 @@ bool WM8978::begin(const uint8_t sda, const uint8_t scl, const uint32_t frequenc
   }
   return begin();
 }
-

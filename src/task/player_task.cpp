@@ -24,9 +24,13 @@ constexpr int AUDIO_PSRAM_BUFFER_BYTES = 512 * 1024;
 constexpr uint32_t SPECTRUM_INTERVAL_MS = 33;
 constexpr uint32_t STATUS_INTERVAL_MS = 100;
 constexpr uint32_t PLAYING_STATUS_INTERVAL_MS = 33;
+constexpr uint32_t BACKGROUND_PLAYING_STATUS_INTERVAL_MS = 1000;
 constexpr uint32_t WEATHER_RECOVERY_GRACE_MS = 15000;
 constexpr uint32_t VOLUME_FADE_OUT_MS = 150;
-constexpr uint32_t VOLUME_FADE_IN_MS = 400;
+constexpr uint32_t VOLUME_FADE_IN_MS = 150;
+constexpr uint32_t CODEC_MUTE_SETTLE_MS = 15;
+constexpr uint32_t EOF_SOFT_MUTE_GUARD_MS = 30;
+constexpr uint32_t EOF_DRAIN_FALLBACK_MS = 200;
 constexpr float SPECTRUM_MIN_HZ = 80.0F;
 constexpr float SPECTRUM_MAX_HZ = 16000.0F;
 constexpr float SPECTRUM_PEAK_DECAY = 0.94F;
@@ -39,6 +43,7 @@ constexpr size_t DIRECT_AUDIO_MAX = 64U;
 
 Audio audio;
 volatile bool eof_received = false;
+volatile bool first_pcm_received = false;
 PlayerStatus status = {};
 bool sd_ready = false;
 bool codec_ready = false;
@@ -48,6 +53,8 @@ bool audio_input_uses_psram = false;
 bool last_start_skipped = false;
 bool skip_feedback_posted_in_pass = false;
 bool weather_recovery_pending = false;
+bool waiting_for_first_pcm = false;
+bool codec_output_muted = false;
 uint32_t weather_recovery_started_ms = 0U;
 uint32_t weather_recovery_file_pos = 0U;
 uint32_t last_sleep_timer_ms = 0U;
@@ -55,6 +62,13 @@ TickType_t last_status_tick = 0;
 TickType_t last_spectrum_tick = 0;
 
 enum class FadeMode : uint8_t { None, Out, In };
+
+enum class TransitionPhase : uint8_t {
+    None,
+    FadeOut,
+    EofDrain,
+    CodecSettle,
+};
 
 struct VolumeFade {
     FadeMode mode = FadeMode::None;
@@ -86,7 +100,10 @@ struct PendingTransition {
 
 VolumeFade volume_fade = {};
 PendingTransition pending_transition = {};
+TransitionPhase transition_phase = TransitionPhase::None;
 uint8_t output_volume = 0U;
+uint32_t transition_deadline_ms = 0U;
+uint32_t eof_mute_at_ms = 0U;
 
 alignas(16) float fft_data[FFT_SIZE * 2] = {};
 alignas(16) float fft_table[FFT_SIZE] = {};
@@ -99,6 +116,7 @@ size_t spectrum_sample_count = 0U;
 uint32_t mapped_sample_rate = 0;
 float spectrum_peak_level = SPECTRUM_MIN_PEAK;
 bool spectrum_ready = false;
+bool visualization_active = false;
 
 uint16_t shuffle_order[PLAYER_MAX_TRACKS] = {};
 uint16_t shuffle_count = 0;
@@ -118,7 +136,35 @@ void begin_fade_in();
 bool service_volume_fade();
 bool transition_pending();
 void request_transition(const PendingTransition &transition);
+void request_eof_transition(const PendingTransition &transition);
 void service_transition();
+void service_started_audio();
+void arm_first_pcm_start();
+
+BspAudioPlaybackRoute active_playback_route() {
+    return status.amplifier_enabled ? BspAudioPlaybackRoute::Speaker
+                                    : BspAudioPlaybackRoute::Headphones;
+}
+
+bool set_playback_route(BspAudioPlaybackRoute route) {
+    if (!codec_ready || !i2s_ready) return route == BspAudioPlaybackRoute::Off;
+    const bool applied = bsp_audio_set_playback_route(route);
+    if (applied) {
+        codec_output_muted = route == BspAudioPlaybackRoute::Off;
+    } else {
+        Serial.printf("[PLAYER] audio route change failed route=%u\n",
+                      static_cast<unsigned>(route));
+    }
+    return applied;
+}
+
+void service_visualization_state() {
+    const bool requested = task_player_visualization_active();
+    if (requested == visualization_active) return;
+    visualization_active = requested;
+    clear_spectrum();
+    publish(true);
+}
 
 void clear_weather_recovery() {
     weather_recovery_pending = false;
@@ -196,9 +242,64 @@ bool transition_pending() {
     return pending_transition.type != TransitionType::None;
 }
 
+bool deadline_reached(uint32_t now, uint32_t deadline) {
+    return static_cast<int32_t>(now - deadline) >= 0;
+}
+
+bool set_codec_output_muted(bool muted) {
+    if (codec_output_muted == muted) return true;
+    if (!codec_ready || !bsp_audio_set_output_muted(muted)) return false;
+    codec_output_muted = muted;
+    Serial.printf("[PLAYER] codec soft mute %s\n", muted ? "on" : "off");
+    return true;
+}
+
+void arm_first_pcm_start() {
+    set_output_volume(PLAYER_VOLUME_MIN);
+    volume_fade.mode = FadeMode::None;
+    first_pcm_received = false;
+    waiting_for_first_pcm = true;
+}
+
 void request_transition(const PendingTransition &transition) {
     pending_transition = transition;
+    if (waiting_for_first_pcm || codec_output_muted ||
+        transition_phase == TransitionPhase::EofDrain ||
+        transition_phase == TransitionPhase::CodecSettle) {
+        waiting_for_first_pcm = false;
+        first_pcm_received = false;
+        set_output_volume(PLAYER_VOLUME_MIN);
+        volume_fade.mode = FadeMode::None;
+        if (!set_codec_output_muted(true)) {
+            transition_phase = TransitionPhase::FadeOut;
+            return;
+        }
+        transition_phase = TransitionPhase::CodecSettle;
+        transition_deadline_ms = millis() + CODEC_MUTE_SETTLE_MS;
+        return;
+    }
+
     begin_volume_fade(FadeMode::Out, PLAYER_VOLUME_MIN, VOLUME_FADE_OUT_MS);
+    transition_phase = TransitionPhase::FadeOut;
+}
+
+void request_eof_transition(const PendingTransition &transition) {
+    pending_transition = transition;
+    waiting_for_first_pcm = false;
+    first_pcm_received = false;
+    volume_fade.mode = FadeMode::None;
+
+    uint32_t drain_ms = audio.getI2sOutputBufferDurationMs();
+    if (drain_ms == 0U) drain_ms = EOF_DRAIN_FALLBACK_MS;
+    const uint32_t mute_guard_ms = std::min(drain_ms, EOF_SOFT_MUTE_GUARD_MS);
+    const uint32_t now = millis();
+    eof_mute_at_ms = now + drain_ms - mute_guard_ms;
+    transition_deadline_ms = now + drain_ms;
+    transition_phase = TransitionPhase::EofDrain;
+    Serial.printf("[PLAYER] draining EOF tail sample_rate=%lu drain=%lu ms mute_guard=%lu ms\n",
+                  static_cast<unsigned long>(audio.getSampleRate()),
+                  static_cast<unsigned long>(drain_ms),
+                  static_cast<unsigned long>(mute_guard_ms));
 }
 
 void apply_target_volume() {
@@ -371,6 +472,7 @@ void apply_audio_settings(const AudioSettings &requested, bool persist,
                           bool restart_sleep_timer) {
     AudioSettings settings = requested;
     normalize_audio_settings(settings);
+    const bool route_changed = status.amplifier_enabled != settings.amplifier_enabled;
     status.volume = settings.volume;
     status.playback_mode = settings.playback_mode;
     status.amplifier_enabled = settings.amplifier_enabled;
@@ -382,10 +484,12 @@ void apply_audio_settings(const AudioSettings &requested, bool persist,
     if (codec_ready) {
         bsp_audio_apply_codec_settings(status.bass_db, status.treble_db,
                                        status.surround_depth);
-        bsp_audio_apply_output_route(status.amplifier_enabled);
+        if (route_changed && status.state == PlayerState::Playing &&
+            !waiting_for_first_pcm && !codec_output_muted &&
+            !transition_pending()) {
+            (void)set_playback_route(active_playback_route());
+        }
     }
-    bsp_audio_set_amplifier_enabled(codec_ready && i2s_ready &&
-                                    status.amplifier_enabled);
     if (persist) {
         (void)audio_settings_update(settings);
         if (restart_sleep_timer) {
@@ -487,16 +591,18 @@ bool start_direct_track(uint16_t index) {
     status.track_index = direct_audio_index;
     status.playlist_track_index = direct_audio_index;
     status.playlist_track_count = direct_audio_count;
-    begin_fade_in();
+    arm_first_pcm_start();
     publish(true);
     return true;
 }
 
 void publish(bool force) {
     const TickType_t now = xTaskGetTickCount();
-    const uint32_t interval_ms = status.state == PlayerState::Playing
-                                     ? PLAYING_STATUS_INTERVAL_MS
-                                     : STATUS_INTERVAL_MS;
+    const uint32_t interval_ms =
+        status.state != PlayerState::Playing
+            ? STATUS_INTERVAL_MS
+            : (visualization_active ? PLAYING_STATUS_INTERVAL_MS
+                                    : BACKGROUND_PLAYING_STATUS_INTERVAL_MS);
     if (!force && ((now - last_status_tick) < pdMS_TO_TICKS(interval_ms))) {
         return;
     }
@@ -624,7 +730,7 @@ void analyze_spectrum_frame() {
 }
 
 void analyze_pcm(int16_t *buffer, uint16_t frame_count) {
-    if (!spectrum_ready || buffer == nullptr || frame_count == 0U ||
+    if (!visualization_active || !spectrum_ready || buffer == nullptr || frame_count == 0U ||
         status.state != PlayerState::Playing) {
         return;
     }
@@ -752,7 +858,7 @@ bool start_track_once(uint16_t index) {
     status.duration_seconds = 0;
     status.state = PlayerState::Playing;
     status.error = PlayerError::None;
-    begin_fade_in();
+    arm_first_pcm_start();
     Serial.printf("[PLAYER] playing %s\n", path);
     publish(true);
     return true;
@@ -775,7 +881,7 @@ bool restart_current_track(uint32_t resume_file_pos) {
     track_started = true;
     status.state = PlayerState::Playing;
     status.error = PlayerError::None;
-    begin_fade_in();
+    arm_first_pcm_start();
     Serial.printf("[PLAYER] weather recovery resumed pos=%lu path=%s\n",
                   static_cast<unsigned long>(resume_file_pos), current_path);
     publish(true);
@@ -936,7 +1042,8 @@ bool move_shuffle(int direction, uint16_t *index) {
 
 bool move_track(int direction, bool play, bool automatic = false,
                 bool current_failed = false,
-                uint16_t *target_playlist_track_index = nullptr) {
+                uint16_t *target_playlist_track_index = nullptr,
+                bool preserve_eof_tail = false) {
     if (status.playlist_track_count == 0) return false;
 
     uint16_t index = status.playlist_track_index;
@@ -964,7 +1071,8 @@ bool move_track(int direction, bool play, bool automatic = false,
         transition.track_index = index;
         transition.direction = direction;
         transition.reset_attempts = !current_failed;
-        request_transition(transition);
+        if (preserve_eof_tail) request_eof_transition(transition);
+        else request_transition(transition);
         return true;
     }
     select_track(index);
@@ -972,14 +1080,15 @@ bool move_track(int direction, bool play, bool automatic = false,
     return true;
 }
 
-bool move_direct_track(int direction) {
+bool move_direct_track(int direction, bool preserve_eof_tail = false) {
     if (!direct_audio_mode || direct_audio_count == 0U) return false;
     const uint16_t next = static_cast<uint16_t>((static_cast<int>(direct_audio_index) +
         direct_audio_count + direction) % direct_audio_count);
     PendingTransition transition = {};
     transition.type = TransitionType::StartDirectTrack;
     transition.track_index = next;
-    request_transition(transition);
+    if (preserve_eof_tail) request_eof_transition(transition);
+    else request_transition(transition);
     return true;
 }
 
@@ -1024,9 +1133,9 @@ void handle_command(const PlayerCommand &command) {
                 request_transition(transition);
                 succeeded = true;
             } else if (status.state == PlayerState::Paused) {
-                if (audio.pauseResume()) {
+                if (set_codec_output_muted(true) && audio.pauseResume()) {
                     status.state = PlayerState::Playing;
-                    begin_fade_in();
+                    arm_first_pcm_start();
                     publish(true);
                     succeeded = true;
                 }
@@ -1055,9 +1164,9 @@ void handle_command(const PlayerCommand &command) {
         {
             bool succeeded = false;
             if (status.state == PlayerState::Paused) {
-                if (audio.pauseResume()) {
+                if (set_codec_output_muted(true) && audio.pauseResume()) {
                     status.state = PlayerState::Playing;
-                    begin_fade_in();
+                    arm_first_pcm_start();
                     publish(true);
                     succeeded = true;
                 }
@@ -1207,9 +1316,13 @@ void stop_audio_pipeline() {
     const bool was_flac = ends_with_ignore_case(current_path, ".flac");
     set_output_volume(PLAYER_VOLUME_MIN);
     volume_fade.mode = FadeMode::None;
+    waiting_for_first_pcm = false;
+    first_pcm_received = false;
+    (void)set_codec_output_muted(true);
     if (audio.isRunning() || track_started) {
         audio.stopSong();
     }
+    (void)set_playback_route(BspAudioPlaybackRoute::Off);
     eof_received = false;
     track_started = false;
     clear_weather_recovery();
@@ -1218,18 +1331,22 @@ void stop_audio_pipeline() {
     if (was_flac) log_player_memory("after FLAC stop");
 }
 
-void finish_track_and_advance(bool duration_fallback) {
+void finish_track_and_advance() {
     const uint32_t elapsed = audio.getAudioCurrentTime();
     const uint32_t duration = audio.getAudioFileDuration();
-    stop_audio_pipeline();
     status.error = PlayerError::None;
-    Serial.printf("[PLAYER] %s for track %u elapsed=%lu duration=%lu, trying next\n",
-                  duration_fallback ? "duration fallback" : "EOF",
+    Serial.printf("[PLAYER] EOF for track %u elapsed=%lu duration=%lu, trying next\n",
                   static_cast<unsigned>(status.track_index),
                   static_cast<unsigned long>(elapsed),
                   static_cast<unsigned long>(duration));
-    if (direct_audio_mode) (void)move_direct_track(1);
-    else (void)move_track(1, true, true);
+    const bool queued = direct_audio_mode ? move_direct_track(1, true) :
+        move_track(1, true, true, false, nullptr, true);
+    if (!queued) {
+        stop_audio_pipeline();
+        status.state = PlayerState::Error;
+        status.error = PlayerError::NoPlayableTracks;
+        publish(true);
+    }
 }
 
 void finish_sleep_stop() {
@@ -1244,10 +1361,42 @@ void finish_sleep_stop() {
 void service_transition() {
     const bool fade_completed = service_volume_fade();
     if (!transition_pending()) return;
-    if (volume_fade.mode != FadeMode::None && !fade_completed) return;
+
+    const uint32_t now = millis();
+    switch (transition_phase) {
+        case TransitionPhase::FadeOut:
+            if (volume_fade.mode != FadeMode::None && !fade_completed) return;
+            if (!set_codec_output_muted(true)) return;
+            transition_phase = TransitionPhase::CodecSettle;
+            transition_deadline_ms = now + CODEC_MUTE_SETTLE_MS;
+            return;
+        case TransitionPhase::EofDrain:
+            if (!codec_output_muted && deadline_reached(now, eof_mute_at_ms)) {
+                if (!set_codec_output_muted(true)) return;
+                if (deadline_reached(now, transition_deadline_ms)) {
+                    transition_phase = TransitionPhase::CodecSettle;
+                    transition_deadline_ms = now + CODEC_MUTE_SETTLE_MS;
+                    return;
+                }
+            }
+            if (!deadline_reached(now, transition_deadline_ms)) return;
+            if (!set_codec_output_muted(true)) return;
+            Serial.println("[PLAYER] EOF tail drained, switching track");
+            break;
+        case TransitionPhase::CodecSettle:
+            if (!deadline_reached(now, transition_deadline_ms)) return;
+            break;
+        case TransitionPhase::None:
+        default:
+            if (!set_codec_output_muted(true)) return;
+            break;
+    }
 
     const PendingTransition transition = pending_transition;
     pending_transition = {};
+    transition_phase = TransitionPhase::None;
+    transition_deadline_ms = 0U;
+    eof_mute_at_ms = 0U;
     switch (transition.type) {
         case TransitionType::StartTrack:
             stop_audio_pipeline();
@@ -1258,6 +1407,7 @@ void service_transition() {
         case TransitionType::Pause:
             if (status.state == PlayerState::Playing && audio.isRunning() &&
                 audio.pauseResume()) {
+                (void)set_playback_route(BspAudioPlaybackRoute::Off);
                 status.state = PlayerState::Paused;
                 clear_spectrum();
                 publish(true);
@@ -1288,6 +1438,20 @@ void service_transition() {
             break;
     }
 }
+
+void service_started_audio() {
+    if (!waiting_for_first_pcm || !first_pcm_received ||
+        status.state != PlayerState::Playing || !track_started) {
+        return;
+    }
+    if (!set_playback_route(active_playback_route())) return;
+
+    waiting_for_first_pcm = false;
+    first_pcm_received = false;
+    begin_fade_in();
+    Serial.printf("[PLAYER] first PCM queued, fade in %lu ms\n",
+                  static_cast<unsigned long>(VOLUME_FADE_IN_MS));
+}
 }
 
 void audio_process_extern(int16_t *buffer, uint16_t length, bool *continue_i2s) {
@@ -1295,6 +1459,9 @@ void audio_process_extern(int16_t *buffer, uint16_t length, bool *continue_i2s) 
         *continue_i2s = true;
     }
     analyze_pcm(buffer, length);
+    if (waiting_for_first_pcm && buffer != nullptr && length > 0U) {
+        first_pcm_received = true;
+    }
 }
 
 void audio_eof_mp3(const char *info) {
@@ -1349,12 +1516,9 @@ void player_task(void *parameter) {
     sd_ready = (bits & HW_EVENT_SD_READY) != 0;
     codec_ready = (bits & HW_EVENT_CODEC_READY) != 0;
     if (codec_ready) {
-        i2s_ready = bsp_audio_configure_i2s(audio,
-                                            saved_audio_settings.amplifier_enabled);
+        i2s_ready = bsp_audio_configure_i2s(audio);
         if (!i2s_ready) codec_ready = false;
-        if (i2s_ready) {
-            bsp_audio_apply_output_route(saved_audio_settings.amplifier_enabled);
-        }
+        codec_output_muted = i2s_ready;
     }
     set_output_volume(PLAYER_VOLUME_MIN);
     rescan_library();
@@ -1367,16 +1531,13 @@ void player_task(void *parameter) {
 
         service_sleep_timer();
         service_transition();
+        service_visualization_state();
 
         if (status.state == PlayerState::Playing) {
             audio.loop();
-            const uint32_t elapsed = audio.getAudioCurrentTime();
-            const uint32_t duration = audio.getAudioFileDuration();
-            const bool duration_fallback =
-                duration > 0U && elapsed >= duration &&
-                (elapsed - duration) >= 1U;
-            if (!transition_pending() && (eof_received || duration_fallback)) {
-                finish_track_and_advance(duration_fallback);
+            service_started_audio();
+            if (!transition_pending() && eof_received) {
+                finish_track_and_advance();
             } else if (!transition_pending() && track_started && !audio.isRunning()) {
                 const bool weather_busy = weather_sync_is_busy();
                 if (weather_busy || weather_recovery_pending) {
